@@ -232,7 +232,8 @@ func (p *RelayedParticipantImpl) GetICEConnectionType() types.ICEConnectionType 
 }
 
 func (p *RelayedParticipantImpl) GetBufferFactory() *buffer.Factory {
-	return p.params.Config.BufferFactory
+	// return p.params.Config.BufferFactory
+	panic("not implemented")
 }
 
 func (p *RelayedParticipantImpl) SetResponseSink(sink routing.MessageSink) {
@@ -594,7 +595,7 @@ func (p *RelayedParticipantImpl) OnMediaTrack(track *webrtc.TrackRemote, rtpRece
 		p.params.Logger.Infow("mediaTrack published",
 			"kind", track.Kind().String(),
 			"trackID", publishedTrack.ID(),
-			"rid", track.RID(),
+			"rid", rid,
 			"SSRC", track.SSRC(),
 			"mime", track.Codec().MimeType,
 		)
@@ -602,7 +603,7 @@ func (p *RelayedParticipantImpl) OnMediaTrack(track *webrtc.TrackRemote, rtpRece
 		p.params.Logger.Warnw("webrtc Track published but can't find MediaTrack", nil,
 			"kind", track.Kind().String(),
 			"webrtcTrackID", trackId,
-			"rid", track.RID(),
+			"rid", rid,
 			"SSRC", track.SSRC(),
 			"mime", track.Codec().MimeType,
 		)
@@ -625,7 +626,7 @@ func (p *RelayedParticipantImpl) mediaTrackReceived(track *webrtc.TrackRemote, r
 		"media track received",
 		"kind", track.Kind().String(),
 		"trackID", trackId,
-		"rid", track.RID(),
+		"rid", rid,
 		"SSRC", track.SSRC(),
 		"mime", track.Codec().MimeType,
 	)
@@ -653,7 +654,7 @@ func (p *RelayedParticipantImpl) mediaTrackReceived(track *webrtc.TrackRemote, r
 		}
 
 		ti.MimeType = track.Codec().MimeType
-		// TODO investigate difference between signalCid and sdpCid
+		// TODO: investigate difference between signalCid and sdpCid
 		mt = p.addMediaTrack(trackId, trackId, ti)
 		newTrack = true
 	}

@@ -27,11 +27,20 @@ func (c *Collection) AddRelay(r *Relay) {
 }
 
 // TODO: async
-func (c *Collection) ForEach(f func(relay *Relay)) {
+func (c *Collection) OnceForEach(f func(relay *Relay)) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	c.fs = append(c.fs, f)
+	for _, r := range c.relays {
+		f(r)
+	}
+}
+
+func (c *Collection) ForEach(f func(relay *Relay)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	for _, r := range c.relays {
 		f(r)
 	}

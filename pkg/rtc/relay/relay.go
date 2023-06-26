@@ -19,8 +19,14 @@ import (
 )
 
 const (
-	signalerLabel         = "ion_sfu_relay_signaler"
-	signalerAddTrackEvent = "ion_relay_add_rack"
+	signalerLabel = "ion_sfu_relay_signaler"
+)
+
+type eventType string
+
+const (
+	eventTypeAddTrack eventType = "add_rack"
+	eventTypeCustom   eventType = "custom"
 )
 
 var (
@@ -50,11 +56,11 @@ type addTrackSignal struct {
 	Meta            string                     `json:"meta,omitempty"`
 }
 
-type dcMessage struct {
-	ID      uint64 `json:"id"`
-	IsReply bool   `json:"reply"`
-	Event   string `json:"event"`
-	Payload []byte `json:"payload"`
+type dcEvent struct {
+	ID         uint64    `json:"id"`
+	ReplyForID *uint64   `json:"replyForID"`
+	Type       eventType `json:"type"`
+	Payload    []byte    `json:"payload"`
 }
 
 type TrackParameters interface {
@@ -68,7 +74,6 @@ type TrackParameters interface {
 
 type Relay struct {
 	mu   sync.Mutex
-	rmu  sync.Mutex
 	rand *rand.Rand
 
 	bufferFactory *buffer.Factory
@@ -87,18 +92,19 @@ type Relay struct {
 	receivers   []*webrtc.RTPReceiver
 	localTracks []webrtc.TrackLocal
 
-	pendingRequests map[uint64]chan []byte
+	pendingReplies sync.Map
 
 	ready  bool
 	logger logger.Logger
 
 	onReady                 atomic.Value // func()
-	onDataChannel           atomic.Value // func(channel *webrtc.DataChannel)
 	onTrack                 atomic.Value // func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, meta *TrackMeta)
 	onConnectionStateChange atomic.Value // func(state webrtc.ICETransportState)
 }
 
 func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
+	conf.SettingEngine.BufferFactory = conf.BufferFactory.GetOrNew
+
 	me := webrtc.MediaEngine{}
 	api := webrtc.NewAPI(webrtc.WithMediaEngine(&me), webrtc.WithSettingEngine(conf.SettingEngine))
 	gatherer, err := api.NewICEGatherer(webrtc.ICEGatherOptions{ICEServers: conf.ICEServers})
@@ -113,16 +119,15 @@ func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
 	}
 
 	r := &Relay{
-		bufferFactory:   conf.BufferFactory,
-		rand:            rand.New(rand.NewSource(time.Now().UnixNano())),
-		me:              &me,
-		api:             api,
-		ice:             ice,
-		gatherer:        gatherer,
-		dtls:            dtls,
-		sctp:            sctp,
-		pendingRequests: map[uint64]chan []byte{},
-		logger:          logger,
+		bufferFactory: conf.BufferFactory,
+		rand:          rand.New(rand.NewSource(time.Now().UnixNano())),
+		me:            &me,
+		api:           api,
+		ice:           ice,
+		gatherer:      gatherer,
+		dtls:          dtls,
+		sctp:          sctp,
+		logger:        logger,
 	}
 
 	sctp.OnDataChannel(func(channel *webrtc.DataChannel) {
@@ -130,7 +135,7 @@ func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
 
 		if channel.Label() == signalerLabel {
 			r.signalingDC = channel
-			channel.OnMessage(r.onDataChannelMessage)
+			channel.OnMessage(r.onSignalingDataChannelMessage)
 			channel.OnOpen(func() {
 				if f := r.onReady.Load(); f != nil {
 					f.(func())()
@@ -138,16 +143,16 @@ func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
 			})
 			return
 		}
-
-		if f := r.onDataChannel.Load(); f != nil {
-			f.(func(dataChannel *webrtc.DataChannel))(channel)
-		}
 	})
 
 	ice.OnConnectionStateChange(func(state webrtc.ICETransportState) {
 		if f := r.onConnectionStateChange.Load(); f != nil {
 			f.(func(webrtc.ICETransportState))(state)
 		}
+	})
+
+	ice.OnSelectedCandidatePairChange(func(pair *webrtc.ICECandidatePair) {
+		r.logger.Infow("Relay selected candidate pair", "value", pair.String())
 	})
 
 	return r, nil
@@ -191,6 +196,7 @@ func (r *Relay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
 	if ls.DTLSParameters, err = r.dtls.GetLocalParameters(); err != nil {
 		return err
 	}
+	ls.DTLSParameters.UseNullCipher = true
 
 	ls.SCTPCapabilities = r.sctp.GetCapabilities()
 
@@ -216,7 +222,7 @@ func (r *Relay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
 		return err
 	}
 
-	r.signalingDC.OnMessage(r.onDataChannelMessage)
+	r.signalingDC.OnMessage(r.onSignalingDataChannelMessage)
 
 	r.signalingDC.OnOpen(func() {
 		if f := r.onReady.Load(); f != nil {
@@ -257,6 +263,7 @@ func (r *Relay) Answer(request []byte) ([]byte, error) {
 	if ls.DTLSParameters, err = r.dtls.GetLocalParameters(); err != nil {
 		return nil, err
 	}
+	ls.DTLSParameters.UseNullCipher = true
 
 	ls.SCTPCapabilities = r.sctp.GetCapabilities()
 
@@ -289,6 +296,23 @@ func (r *Relay) start(remoteSignal *offerAnswerSignal) error {
 		return err
 	}
 
+	go func() {
+		for {
+			srtcpSession, err := r.dtls.GetSRTCPSession()
+			if err != nil {
+				r.logger.Warnw("undeclaredMediaProcessor failed to open SrtcpSession: %v", err)
+				return
+			}
+
+			_, ssrc, err := srtcpSession.AcceptStream()
+			if err != nil {
+				r.logger.Warnw("Failed to accept RTCP %v", err)
+				return
+			}
+			r.logger.Warnw("Incoming unhandled RTCP ssrc(%d), OnTrack will not be fired", nil, "ssrc", ssrc)
+		}
+	}()
+
 	if err := r.sctp.Start(remoteSignal.SCTPCapabilities); err != nil {
 		return err
 	}
@@ -299,24 +323,24 @@ func (r *Relay) start(remoteSignal *offerAnswerSignal) error {
 func (r *Relay) WriteRTCP(pkts []rtcp.Packet) error {
 	for _, pkt := range pkts {
 		if pli, ok := pkt.(*rtcp.PictureLossIndication); ok {
-			fmt.Printf("PictureLossIndication(SenderSSRC=%v, MediaSSRC=%v)\n", pli.SenderSSRC, pli.MediaSSRC)
+			fmt.Printf("PictureLossIndication(MediaSSRC=%v, SenderSSRC=%v)\n", pli.MediaSSRC, pli.SenderSSRC)
 		}
 	}
 	_, err := r.dtls.WriteRTCP(pkts)
 	return err
 }
 
-func (r *Relay) AddTrack(rtpParameters webrtc.RTPParameters, trackParameters TrackParameters, localTrack webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
+func (r *Relay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters TrackParameters, localTrack webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	codec := trackParameters.Codec()
 	sdr, err := r.api.NewRTPSender(localTrack, r.dtls)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("NewRTPSender error: %w", err)
 	}
 	if err = r.me.RegisterCodec(codec, trackParameters.Kind()); err != nil {
-		return nil, err
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
 	}
 
 	s := &addTrackSignal{
@@ -331,15 +355,27 @@ func (r *Relay) AddTrack(rtpParameters webrtc.RTPParameters, trackParameters Tra
 		},
 		Meta: trackMeta,
 	}
-	pld, err := json.Marshal(&s)
-	if err != nil {
-		return nil, err
+	pld, marshalErr := json.Marshal(s)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("marshal error: %w", marshalErr)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
-	defer cancel()
-	if _, err = r.request(ctx, signalerAddTrackEvent, pld); err != nil {
-		return nil, err
+	event := dcEvent{
+		ID:      r.rand.Uint64(),
+		Type:    eventTypeAddTrack,
+		Payload: pld,
+	}
+
+	replyCh, sendErr := r.send(event, true)
+	if sendErr != nil {
+		return nil, fmt.Errorf("send error: %w", marshalErr)
+	}
+
+	select {
+	case <-replyCh:
+		r.logger.Infow("add track reply received")
+	case <-ctx.Done():
+		return nil, fmt.Errorf("add track context err: %w", ctx.Err())
 	}
 
 	if err = sdr.Send(webrtc.RTPSendParameters{
@@ -362,83 +398,52 @@ func (r *Relay) AddTrack(rtpParameters webrtc.RTPParameters, trackParameters Tra
 	return sdr, nil
 }
 
-func (r *Relay) request(ctx context.Context, event string, data []byte) ([]byte, error) {
-	req := dcMessage{
-		ID:      r.rand.Uint64(),
-		Event:   event,
-		Payload: data,
-	}
+func (r *Relay) onSignalingDataChannelMessage(msg webrtc.DataChannelMessage) {
+	r.logger.Infow("onSignalingDataChannelMessage")
 
-	msg, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-
-	if err = r.signalingDC.Send(msg); err != nil {
-		return nil, err
-	}
-	r.logger.Infow("data channel request sent")
-
-	resp := make(chan []byte, 1)
-
-	r.rmu.Lock()
-	r.pendingRequests[req.ID] = resp
-	r.rmu.Unlock()
-
-	defer func() {
-		r.rmu.Lock()
-		delete(r.pendingRequests, req.ID)
-		r.rmu.Unlock()
-	}()
-
-	select {
-	case r := <-resp:
-		return r, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
-	}
-}
-
-func (r *Relay) onDataChannelMessage(msg webrtc.DataChannelMessage) {
-	r.logger.Infow("onDataChannelMessage")
-
-	mr := &dcMessage{}
-	if err := json.Unmarshal(msg.Data, mr); err != nil {
+	event := &dcEvent{}
+	if err := json.Unmarshal(msg.Data, event); err != nil {
 		r.logger.Errorw("Error marshaling remote message", err)
+
 		return
 	}
 
-	if mr.Event == signalerAddTrackEvent && !mr.IsReply {
-		r.logger.Infow("onDataChannelMessage ")
+	if event.ReplyForID != nil {
+		r.logger.Infow("reply received")
 
-		r.mu.Lock()
-		defer r.mu.Unlock()
+		replyForID := *event.ReplyForID
+		if replyCh, loaded := r.pendingReplies.LoadAndDelete(replyForID); loaded {
+			r.logger.Infow("sending reply")
+			replyCh.(chan []byte) <- event.Payload
+			r.logger.Infow("reply sent")
+		} else {
+			r.logger.Warnw("undefined reply", nil, "replyForID", replyForID)
+		}
+	} else if event.Type == eventTypeAddTrack {
+		r.logger.Infow("add track received")
 
 		s := &addTrackSignal{}
-		if err := json.Unmarshal(mr.Payload, s); err != nil {
-			r.logger.Errorw("Error marshaling remote message", err)
+		if err := json.Unmarshal(event.Payload, s); err != nil {
+			r.logger.Errorw("Error unmarshal remote message", err)
 			return
 		}
 		if err := r.handleAddTrack(s); err != nil {
 			r.logger.Errorw("Error receiving remote track", err)
 			return
 		}
-		if err := r.reply(mr.ID, mr.Event, nil); err != nil {
+
+		replyEvent := dcEvent{
+			ID:         r.rand.Uint64(),
+			ReplyForID: &event.ID,
+			Type:       event.Type,
+		}
+
+		if _, err := r.send(replyEvent, false); err != nil {
 			r.logger.Errorw("Error replying message", err)
 			return
 		}
-
-		return
-	}
-
-	if mr.IsReply {
-		r.rmu.Lock()
-		if c, ok := r.pendingRequests[mr.ID]; ok {
-			c <- mr.Payload
-			delete(r.pendingRequests, mr.ID)
-		}
-		r.rmu.Unlock()
-		return
+	} else if event.Type == eventTypeCustom {
+		r.logger.Infow("custom received")
 	}
 }
 
@@ -491,27 +496,6 @@ func (r *Relay) handleAddTrack(s *addTrackSignal) error {
 	return nil
 }
 
-func (r *Relay) reply(id uint64, event string, payload []byte) error {
-	req := dcMessage{
-		ID:      id,
-		Event:   event,
-		Payload: payload,
-		IsReply: true,
-	}
-
-	msg, err := json.Marshal(req)
-	if err != nil {
-		return err
-	}
-
-	if err = r.signalingDC.Send(msg); err != nil {
-		r.logger.Errorw("data channel reply sent", err)
-		return err
-	}
-	r.logger.Infow("data channel reply sent")
-	return nil
-}
-
 func (r *Relay) createDataChannel(label string) (*webrtc.DataChannel, error) {
 	idx := r.dcIndex
 	r.dcIndex++
@@ -527,14 +511,65 @@ func (r *Relay) OnReady(f func()) {
 	r.onReady.Store(f)
 }
 
-func (r *Relay) OnDataChannel(f func(channel *webrtc.DataChannel)) {
-	r.onDataChannel.Store(f)
-}
-
 func (r *Relay) OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string)) {
 	r.onTrack.Store(f)
 }
 
 func (r *Relay) OnConnectionStateChange(f func(state webrtc.ICETransportState)) {
 	r.onConnectionStateChange.Store(f)
+}
+
+func (r *Relay) Send(payload []byte) error {
+	event := dcEvent{
+		ID:      r.rand.Uint64(),
+		Type:    eventTypeCustom,
+		Payload: payload,
+	}
+	_, err := r.send(event, false)
+	return err
+}
+
+func (r *Relay) SendReply(replyForID uint64, payload []byte) error {
+	event := dcEvent{
+		ID:         r.rand.Uint64(),
+		ReplyForID: &replyForID,
+		Type:       eventTypeCustom,
+		Payload:    payload,
+	}
+	_, err := r.send(event, false)
+	return err
+}
+
+func (r *Relay) SendAndExpectReply(payload []byte) (<-chan []byte, error) {
+	event := dcEvent{
+		ID:      r.rand.Uint64(),
+		Type:    eventTypeCustom,
+		Payload: payload,
+	}
+	return r.send(event, true)
+}
+
+func (r *Relay) send(event dcEvent, replyExpected bool) (<-chan []byte, error) {
+	data, marshalErr := json.Marshal(event)
+	if marshalErr != nil {
+		return nil, fmt.Errorf("can not marshal DC event: %w", marshalErr)
+	}
+	var reply chan []byte
+	if replyExpected {
+		reply = make(chan []byte, 1)
+		r.pendingReplies.Store(event.ID, reply)
+	}
+	if err := r.signalingDC.Send(data); err != nil {
+		r.pendingReplies.Delete(event.ID)
+		return nil, fmt.Errorf("can not send DC event: %w", err)
+	}
+	return reply, nil
+}
+
+func (r *Relay) DebugInfo() map[string]interface{} {
+	iceConn := r.ice.GetConn()
+	return map[string]interface{}{
+		"BytesSent":     iceConn.BytesSent(),
+		"BytesReceived": iceConn.BytesReceived(),
+	}
 }
