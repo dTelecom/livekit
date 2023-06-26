@@ -1141,7 +1141,7 @@ func (p *ParticipantImpl) onSubscriberOffer(offer webrtc.SessionDescription) err
 }
 
 func (p *ParticipantImpl) forwardTrackToRelays(publishedTrack *MediaTrack, track *webrtc.TrackRemote, rtpReceiver *webrtc.RTPReceiver) {
-	p.params.RelayCollection.OnceForEach(func(relay *relay.Relay) {
+	p.params.RelayCollection.OnceForEach(func(relay relay.Relay) {
 		codec := track.Codec()
 		tr := publishedTrack.MediaTrackReceiver.Receiver(track.Codec().MimeType)
 		rtpCodecParameters := []webrtc.RTPCodecParameters{{

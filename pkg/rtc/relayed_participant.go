@@ -39,7 +39,7 @@ type RelayedParticipantParams struct {
 	Telemetry         telemetry.TelemetryService
 	PLIThrottleConfig config.PLIThrottleConfig
 	VersionGenerator  utils.TimedVersionGenerator
-	Relay             *relay.Relay
+	Relay             relay.Relay
 }
 
 type RelayedParticipantImpl struct {

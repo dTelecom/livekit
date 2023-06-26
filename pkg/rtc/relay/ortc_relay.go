@@ -72,7 +72,7 @@ type TrackParameters interface {
 	RID() string
 }
 
-type Relay struct {
+type OrtcRelay struct {
 	mu   sync.Mutex
 	rand *rand.Rand
 
@@ -102,7 +102,7 @@ type Relay struct {
 	onConnectionStateChange atomic.Value // func(state webrtc.ICETransportState)
 }
 
-func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
+func NewRelay(logger logger.Logger, conf *RelayConfig) (*OrtcRelay, error) {
 	conf.SettingEngine.BufferFactory = conf.BufferFactory.GetOrNew
 
 	me := webrtc.MediaEngine{}
@@ -118,7 +118,7 @@ func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
 		return nil, err
 	}
 
-	r := &Relay{
+	r := &OrtcRelay{
 		bufferFactory: conf.BufferFactory,
 		rand:          rand.New(rand.NewSource(time.Now().UnixNano())),
 		me:            &me,
@@ -158,15 +158,15 @@ func NewRelay(logger logger.Logger, conf *RelayConfig) (*Relay, error) {
 	return r, nil
 }
 
-func (r *Relay) GetBufferFactory() *buffer.Factory {
+func (r *OrtcRelay) GetBufferFactory() *buffer.Factory {
 	return r.bufferFactory
 }
 
-func (r *Relay) IsReady() bool {
+func (r *OrtcRelay) IsReady() bool {
 	return r.ready
 }
 
-func (r *Relay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
+func (r *OrtcRelay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
 	if r.gatherer.State() == webrtc.ICEGathererStateNew {
 		gatherFinished := make(chan struct{})
 		r.gatherer.OnLocalCandidate(func(i *webrtc.ICECandidate) {
@@ -196,7 +196,7 @@ func (r *Relay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
 	if ls.DTLSParameters, err = r.dtls.GetLocalParameters(); err != nil {
 		return err
 	}
-	ls.DTLSParameters.UseNullCipher = true
+	// ls.DTLSParameters.UseNullCipher = true
 
 	ls.SCTPCapabilities = r.sctp.GetCapabilities()
 
@@ -233,7 +233,7 @@ func (r *Relay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
 	return nil
 }
 
-func (r *Relay) Answer(request []byte) ([]byte, error) {
+func (r *OrtcRelay) Answer(request []byte) ([]byte, error) {
 	if r.gatherer.State() == webrtc.ICEGathererStateNew {
 		gatherFinished := make(chan struct{})
 		r.gatherer.OnLocalCandidate(func(i *webrtc.ICECandidate) {
@@ -263,7 +263,7 @@ func (r *Relay) Answer(request []byte) ([]byte, error) {
 	if ls.DTLSParameters, err = r.dtls.GetLocalParameters(); err != nil {
 		return nil, err
 	}
-	ls.DTLSParameters.UseNullCipher = true
+	// ls.DTLSParameters.UseNullCipher = true
 
 	ls.SCTPCapabilities = r.sctp.GetCapabilities()
 
@@ -283,7 +283,7 @@ func (r *Relay) Answer(request []byte) ([]byte, error) {
 	return json.Marshal(ls)
 }
 
-func (r *Relay) start(remoteSignal *offerAnswerSignal) error {
+func (r *OrtcRelay) start(remoteSignal *offerAnswerSignal) error {
 	if err := r.ice.SetRemoteCandidates(remoteSignal.ICECandidates); err != nil {
 		return err
 	}
@@ -296,23 +296,6 @@ func (r *Relay) start(remoteSignal *offerAnswerSignal) error {
 		return err
 	}
 
-	go func() {
-		for {
-			srtcpSession, err := r.dtls.GetSRTCPSession()
-			if err != nil {
-				r.logger.Warnw("undeclaredMediaProcessor failed to open SrtcpSession: %v", err)
-				return
-			}
-
-			_, ssrc, err := srtcpSession.AcceptStream()
-			if err != nil {
-				r.logger.Warnw("Failed to accept RTCP %v", err)
-				return
-			}
-			r.logger.Warnw("Incoming unhandled RTCP ssrc(%d), OnTrack will not be fired", nil, "ssrc", ssrc)
-		}
-	}()
-
 	if err := r.sctp.Start(remoteSignal.SCTPCapabilities); err != nil {
 		return err
 	}
@@ -320,7 +303,7 @@ func (r *Relay) start(remoteSignal *offerAnswerSignal) error {
 	return nil
 }
 
-func (r *Relay) WriteRTCP(pkts []rtcp.Packet) error {
+func (r *OrtcRelay) WriteRTCP(pkts []rtcp.Packet) error {
 	for _, pkt := range pkts {
 		if pli, ok := pkt.(*rtcp.PictureLossIndication); ok {
 			fmt.Printf("PictureLossIndication(MediaSSRC=%v, SenderSSRC=%v)\n", pli.MediaSSRC, pli.SenderSSRC)
@@ -330,7 +313,7 @@ func (r *Relay) WriteRTCP(pkts []rtcp.Packet) error {
 	return err
 }
 
-func (r *Relay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters TrackParameters, localTrack webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
+func (r *OrtcRelay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters TrackParameters, localTrack webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -398,7 +381,7 @@ func (r *Relay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters
 	return sdr, nil
 }
 
-func (r *Relay) onSignalingDataChannelMessage(msg webrtc.DataChannelMessage) {
+func (r *OrtcRelay) onSignalingDataChannelMessage(msg webrtc.DataChannelMessage) {
 	r.logger.Infow("onSignalingDataChannelMessage")
 
 	event := &dcEvent{}
@@ -447,7 +430,7 @@ func (r *Relay) onSignalingDataChannelMessage(msg webrtc.DataChannelMessage) {
 	}
 }
 
-func (r *Relay) handleAddTrack(s *addTrackSignal) error {
+func (r *OrtcRelay) handleAddTrack(s *addTrackSignal) error {
 	var k webrtc.RTPCodecType
 	switch {
 	case strings.HasPrefix(s.CodecParameters.MimeType, "audio/"):
@@ -496,7 +479,7 @@ func (r *Relay) handleAddTrack(s *addTrackSignal) error {
 	return nil
 }
 
-func (r *Relay) createDataChannel(label string) (*webrtc.DataChannel, error) {
+func (r *OrtcRelay) createDataChannel(label string) (*webrtc.DataChannel, error) {
 	idx := r.dcIndex
 	r.dcIndex++
 	dcParams := &webrtc.DataChannelParameters{
@@ -507,19 +490,19 @@ func (r *Relay) createDataChannel(label string) (*webrtc.DataChannel, error) {
 	return r.api.NewDataChannel(r.sctp, dcParams)
 }
 
-func (r *Relay) OnReady(f func()) {
+func (r *OrtcRelay) OnReady(f func()) {
 	r.onReady.Store(f)
 }
 
-func (r *Relay) OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string)) {
+func (r *OrtcRelay) OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string)) {
 	r.onTrack.Store(f)
 }
 
-func (r *Relay) OnConnectionStateChange(f func(state webrtc.ICETransportState)) {
+func (r *OrtcRelay) OnConnectionStateChange(f func(state webrtc.ICETransportState)) {
 	r.onConnectionStateChange.Store(f)
 }
 
-func (r *Relay) Send(payload []byte) error {
+func (r *OrtcRelay) Send(payload []byte) error {
 	event := dcEvent{
 		ID:      r.rand.Uint64(),
 		Type:    eventTypeCustom,
@@ -529,7 +512,7 @@ func (r *Relay) Send(payload []byte) error {
 	return err
 }
 
-func (r *Relay) SendReply(replyForID uint64, payload []byte) error {
+func (r *OrtcRelay) SendReply(replyForID uint64, payload []byte) error {
 	event := dcEvent{
 		ID:         r.rand.Uint64(),
 		ReplyForID: &replyForID,
@@ -540,7 +523,7 @@ func (r *Relay) SendReply(replyForID uint64, payload []byte) error {
 	return err
 }
 
-func (r *Relay) SendAndExpectReply(payload []byte) (<-chan []byte, error) {
+func (r *OrtcRelay) SendAndExpectReply(payload []byte) (<-chan []byte, error) {
 	event := dcEvent{
 		ID:      r.rand.Uint64(),
 		Type:    eventTypeCustom,
@@ -549,7 +532,7 @@ func (r *Relay) SendAndExpectReply(payload []byte) (<-chan []byte, error) {
 	return r.send(event, true)
 }
 
-func (r *Relay) send(event dcEvent, replyExpected bool) (<-chan []byte, error) {
+func (r *OrtcRelay) send(event dcEvent, replyExpected bool) (<-chan []byte, error) {
 	data, marshalErr := json.Marshal(event)
 	if marshalErr != nil {
 		return nil, fmt.Errorf("can not marshal DC event: %w", marshalErr)
@@ -566,10 +549,10 @@ func (r *Relay) send(event dcEvent, replyExpected bool) (<-chan []byte, error) {
 	return reply, nil
 }
 
-func (r *Relay) DebugInfo() map[string]interface{} {
-	iceConn := r.ice.GetConn()
+func (r *OrtcRelay) DebugInfo() map[string]interface{} {
+	// iceConn := r.ice.GetConn()
 	return map[string]interface{}{
-		"BytesSent":     iceConn.BytesSent(),
-		"BytesReceived": iceConn.BytesReceived(),
+		// "BytesSent":     iceConn.BytesSent(),
+		// "BytesReceived": iceConn.BytesReceived(),
 	}
 }

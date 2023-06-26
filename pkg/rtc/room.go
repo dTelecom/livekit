@@ -300,7 +300,7 @@ func NewRoom(
 	return r
 }
 
-func (r *Room) onRelayAddTrack(rel *relay.Relay, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string) {
+func (r *Room) onRelayAddTrack(rel relay.Relay, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string) {
 	logger.Infow("Relay track published", "mid", mid)
 	var participantInfo livekit.ParticipantInfo
 	if err := json.Unmarshal([]byte(meta), &participantInfo); err != nil {
@@ -1471,7 +1471,7 @@ func (r *Room) DebugInfo() map[string]interface{} {
 
 	outRelaysInfo := make(map[string]interface{})
 	i := 0
-	r.outRelayCollection.ForEach(func(relay *relay.Relay) {
+	r.outRelayCollection.ForEach(func(relay relay.Relay) {
 		outRelaysInfo[strconv.Itoa(i)] = relay.DebugInfo()
 		i++
 	})
