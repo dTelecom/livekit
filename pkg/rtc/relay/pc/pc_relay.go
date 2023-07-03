@@ -14,6 +14,7 @@ import (
 	"github.com/pion/webrtc/v3"
 
 	"github.com/livekit/livekit-server/pkg/rtc/relay"
+	"github.com/livekit/livekit-server/pkg/sfu"
 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
 )
 
@@ -68,6 +69,16 @@ var opusCodec = webrtc.RTPCodecParameters{
 	PayloadType: 111,
 }
 
+var redCodec = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:    sfu.MimeTypeAudioRed,
+		ClockRate:   48000,
+		Channels:    2,
+		SDPFmtpLine: "111/111",
+	},
+	PayloadType: 63,
+}
+
 var vp8Codec = webrtc.RTPCodecParameters{
 	RTPCodecCapability: webrtc.RTPCodecCapability{
 		MimeType:     webrtc.MimeTypeVP8,
@@ -112,6 +123,9 @@ func NewRelay(logger logger.Logger, conf *relay.RelayConfig) (*PcRelay, error) {
 
 	me := &webrtc.MediaEngine{}
 	if err := me.RegisterCodec(opusCodec, webrtc.RTPCodecTypeAudio); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+	if err := me.RegisterCodec(redCodec, webrtc.RTPCodecTypeAudio); err != nil {
 		return nil, fmt.Errorf("RegisterCodec error: %w", err)
 	}
 	if err := me.RegisterCodec(vp8Codec, webrtc.RTPCodecTypeVideo); err != nil {
@@ -172,12 +186,12 @@ func (r *PcRelay) resignal() {
 		return
 	}
 
+	fmt.Printf("Offer SDP:\n%v\n", offer.SDP)
+
 	if err := r.pc.SetLocalDescription(offer); err != nil {
 		r.logger.Errorw("SetLocalDescription error", offerErr)
 		return
 	}
-
-	fmt.Println(offer.SDP)
 
 	offerData, marshalErr := json.Marshal(offer)
 	if marshalErr != nil {
@@ -207,6 +221,8 @@ func (r *PcRelay) resignal() {
 			r.logger.Errorw("Unmarshal error", err)
 			return
 		}
+
+		fmt.Printf("Answer SDP:\n%v\n", answer.SDP)
 
 		if err := r.pc.SetRemoteDescription(answer); err != nil {
 			r.logger.Errorw("SetRemoteDescription error", err)
