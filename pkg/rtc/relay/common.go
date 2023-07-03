@@ -11,12 +11,3 @@ type RelayConfig struct {
 	ICEServers    []webrtc.ICEServer
 	BufferFactory *buffer.Factory
 }
-
-type TrackParameters interface {
-	ID() string
-	StreamID() string
-	Kind() webrtc.RTPCodecType
-	Codec() webrtc.RTPCodecParameters
-	PayloadType() webrtc.PayloadType
-	RID() string
-}

@@ -1177,7 +1177,7 @@ func (p *ParticipantImpl) forwardTrackToRelays(publishedTrack *MediaTrack, track
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		_, err = relay.AddTrack(ctx, tr.(*sfu.WebRTCReceiver).GetRTPParameters(), track, dt, p.TransportManager.GetPublisherMid(rtpReceiver), string(participantInfo))
+		_, err = relay.AddTrack(ctx, dt, track.RID(), string(participantInfo))
 		if err != nil {
 			p.params.Logger.Errorw("add track to relay", err)
 			return

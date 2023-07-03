@@ -292,8 +292,8 @@ func NewRoom(
 
 			logger.Infow("answer sent")
 
-			rel.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string) {
-				r.onRelayAddTrack(rel, track, receiver, mid, trackId, streamId, rid, meta)
+			rel.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta string) {
+				r.onRelayAddTrack(rel, track, receiver, mid, rid, meta)
 			})
 		}
 	})
@@ -301,7 +301,7 @@ func NewRoom(
 	return r
 }
 
-func (r *Room) onRelayAddTrack(rel relay.Relay, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string) {
+func (r *Room) onRelayAddTrack(rel relay.Relay, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta string) {
 	logger.Infow("Relay track published", "mid", mid)
 	var participantInfo livekit.ParticipantInfo
 	if err := json.Unmarshal([]byte(meta), &participantInfo); err != nil {
@@ -433,7 +433,7 @@ func (r *Room) onRelayAddTrack(rel relay.Relay, track *webrtc.TrackRemote, recei
 			}
 		}
 	}()
-	remoteParticipant.OnMediaTrack(track, receiver, mid, trackId, streamId, rid, participantInfo.Tracks)
+	remoteParticipant.OnMediaTrack(track, receiver, mid, rid, participantInfo.Tracks)
 }
 
 func (r *Room) ToProto() *livekit.Room {

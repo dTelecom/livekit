@@ -341,39 +341,19 @@ func (r *PcRelay) GetBufferFactory() *buffer.Factory {
 	return r.bufferFactory
 }
 
-// func (r *PcRelay) IsReady() bool {
-// 	// TODO implement me
-// 	panic("implement me")
-// }
-
 func (r *PcRelay) WriteRTCP(pkts []rtcp.Packet) error {
 	return r.pc.WriteRTCP(pkts)
 }
 
-func (r *PcRelay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters relay.TrackParameters, track webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
+func (r *PcRelay) AddTrack(ctx context.Context, track webrtc.TrackLocal, trackRid string, trackMeta string) (*webrtc.RTPSender, error) {
 	if rtpSender, err := r.pc.AddTrack(track); err != nil {
 		return nil, err
 	} else {
-		// rtpSendErr := rtpSender.Send(webrtc.RTPSendParameters{
-		// 	RTPParameters: rtpParameters,
-		// 	Encodings: []webrtc.RTPEncodingParameters{
-		// 		{
-		// 			webrtc.RTPCodingParameters{
-		// 				SSRC:        rtpSender.GetParameters().Encodings[0].SSRC,
-		// 				PayloadType: trackParameters.PayloadType(),
-		// 			},
-		// 		},
-		// 	},
-		// })
-		// if rtpSendErr != nil {
-		// 	return nil, fmt.Errorf("rtpSender.Send error: %w", rtpSendErr)
-		// }
-
 		go r.resignal()
 
 		signal := &addTrackSignal{
 			Encodings: rtpSender.GetParameters().Encodings,
-			Rid:       trackParameters.RID(),
+			Rid:       trackRid,
 			Meta:      trackMeta,
 		}
 		signalPayload, marshalErr := json.Marshal(signal)
@@ -407,7 +387,7 @@ func (r *PcRelay) OnReady(f func()) {
 	r.onReady.Store(f)
 }
 
-func (r *PcRelay) OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string)) {
+func (r *PcRelay) OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta string)) {
 	r.onTrack.Store(f)
 }
 
@@ -474,12 +454,10 @@ func (r *PcRelay) onPeerConnectionTrack(trackRemote *webrtc.TrackRemote, rtpRece
 	if infoTrack, ok := r.pendingInfoTracks[trackRemote.SSRC()]; ok {
 		delete(r.pendingInfoTracks, trackRemote.SSRC())
 		if f := r.onTrack.Load(); f != nil {
-			f.(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string))(
+			f.(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta string))(
 				trackRemote,
 				rtpReceiver,
 				r.getMid(rtpReceiver),
-				trackRemote.ID(),
-				trackRemote.StreamID(),
 				infoTrack.rid,
 				infoTrack.meta,
 			)
@@ -498,12 +476,10 @@ func (r *PcRelay) onAddTrackSignal(signal *addTrackSignal) {
 			delete(r.pendingWebrtcTracks, encoding.SSRC)
 			trackRemote, rtpReceiver, mid := webrtcTrack.trackRemote, webrtcTrack.rtpReceiver, webrtcTrack.mid
 			if f := r.onTrack.Load(); f != nil {
-				f.(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string))(
+				f.(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta string))(
 					trackRemote,
 					rtpReceiver,
 					mid,
-					trackRemote.ID(),
-					trackRemote.StreamID(),
 					signal.Rid,
 					signal.Meta,
 				)

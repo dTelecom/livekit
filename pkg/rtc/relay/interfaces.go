@@ -11,13 +11,12 @@ import (
 
 type Relay interface {
 	GetBufferFactory() *buffer.Factory
-	// IsReady() bool
 	Offer(signalFn func(signal []byte) ([]byte, error)) error
 	Answer(request []byte) ([]byte, error)
 	WriteRTCP(pkts []rtcp.Packet) error
-	AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters TrackParameters, track webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error)
+	AddTrack(ctx context.Context, track webrtc.TrackLocal, trackRid string, trackMeta string) (*webrtc.RTPSender, error)
 	OnReady(f func())
-	OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, trackId string, streamId string, rid string, meta string))
+	OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, trackMeta string))
 	OnConnectionStateChange(f func(state webrtc.ICEConnectionState))
 	Send(payload []byte) error
 	SendReply(replyForID uint64, payload []byte) error
