@@ -47,7 +47,6 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		telemetry.NewAnalyticsService,
 		telemetry.NewTelemetryService,
 		getMessageBus,
-		NewIOInfoService,
 		getEgressClient,
 		egress.NewRedisRPCClient,
 		getEgressStore,
@@ -67,6 +66,8 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		newTurnAuthHandler,
 		newInProcessTurnServer,
 		utils.NewDefaultTimedVersionGenerator,
+		createSmartContractClient,
+		createClientProvider,
 		NewLivekitServer,
 	)
 	return &LivekitServer{}, nil
@@ -83,6 +84,24 @@ func InitializeRouter(conf *config.Config, currentNode routing.LocalNode) (routi
 	)
 
 	return nil, nil
+}
+
+func createClientProvider(contract *p2p_database.EthSmartContract, db *p2p_database.DB) *ClientProvider {
+	return NewClientProvider(db, contract)
+}
+
+func createSmartContractClient(conf *config.Config) (*p2p_database.EthSmartContract, error) {
+	contract, err := p2p_database.NewEthSmartContract(p2p_database.Config{
+		EthereumNetworkHost:     conf.Ethereum.NetworkHost,
+		EthereumNetworkKey:      conf.Ethereum.NetworkKey,
+		EthereumContractAddress: conf.Ethereum.ContractAddress,
+	}, nil)
+
+	if err != nil {
+		return nil, errors.Wrap(err, "try create contract")
+	}
+
+	return contract, nil
 }
 
 func createParticipantCounter(mainDatabase *p2p_database.DB) *ParticipantCounter {
@@ -131,16 +150,13 @@ func createKeyPublicKeyProvider(conf *config.Config) (auth.KeyProviderPublicKey,
 }
 
 func createWebhookNotifier(conf *config.Config, provider auth.KeyProvider) (webhook.Notifier, error) {
-	wc := conf.WebHook
-	if len(wc.URLs) == 0 {
-		return nil, nil
-	}
-	secret := provider.GetSecret(wc.APIKey)
+	wallet := conf.Ethereum.WalletAddress
+	secret := provider.GetSecret(wallet)
 	if secret == "" {
 		return nil, ErrWebHookMissingAPIKey
 	}
 
-	return webhook.NewNotifier(wc.APIKey, secret, wc.URLs), nil
+	return webhook.NewNotifier(wallet, secret), nil
 }
 
 func createRedisClient(conf *config.Config) (redis.UniversalClient, error) {
@@ -150,8 +166,8 @@ func createRedisClient(conf *config.Config) (redis.UniversalClient, error) {
 	return redisLiveKit.GetRedisClient(&conf.Redis)
 }
 
-func createStore(p2pDbConfig p2p_database.Config, nodeID livekit.NodeID, participantCounter *ParticipantCounter) ObjectStore {
-	return NewLocalStore(nodeID, p2pDbConfig, participantCounter)
+func createStore(mainDatabase *p2p_database.DB, p2pDbConfig p2p_database.Config, nodeID livekit.NodeID, participantCounter *ParticipantCounter) ObjectStore {
+	return NewLocalStore(nodeID, p2pDbConfig, participantCounter, mainDatabase)
 }
 
 func getMessageBus(rc redis.UniversalClient) psrpc.MessageBus {
@@ -170,21 +186,11 @@ func getEgressClient(conf *config.Config, nodeID livekit.NodeID, bus psrpc.Messa
 }
 
 func getEgressStore(s ObjectStore) EgressStore {
-	switch store := s.(type) {
-	case *RedisStore:
-		return store
-	default:
-		return nil
-	}
+	return nil
 }
 
 func getIngressStore(s ObjectStore) IngressStore {
-	switch store := s.(type) {
-	case *RedisStore:
-		return store
-	default:
-		return nil
-	}
+	return nil
 }
 
 func getIngressConfig(conf *config.Config) *config.IngressConfig {

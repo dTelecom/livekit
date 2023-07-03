@@ -31,27 +31,27 @@ import (
 )
 
 type LivekitServer struct {
-	config       *config.Config
-	ioService    *IOInfoService
-	rtcService   *RTCService
-	httpServer   *http.Server
-	httpsServer  *http.Server
-	promServer   *http.Server
-	router       routing.Router
-	roomManager  *RoomManager
-	signalServer *SignalServer
-	turnServer   *turn.Server
-	currentNode  routing.LocalNode
-	running      atomic.Bool
-	doneChan     chan struct{}
-	closedChan   chan struct{}
+	config             *config.Config
+	rtcService         *RTCService
+	httpServer         *http.Server
+	httpsServer        *http.Server
+	promServer         *http.Server
+	router             routing.Router
+	roomManager        *RoomManager
+	signalServer       *SignalServer
+	turnServer         *turn.Server
+	currentNode        routing.LocalNode
+	clientProvider     *ClientProvider
+	participantCounter *ParticipantCounter
+	running            atomic.Bool
+	doneChan           chan struct{}
+	closedChan         chan struct{}
 }
 
 func NewLivekitServer(conf *config.Config,
 	roomService livekit.RoomService,
 	egressService *EgressService,
 	ingressService *IngressService,
-	ioService *IOInfoService,
 	rtcService *RTCService,
 	keyProvider auth.KeyProviderPublicKey,
 	router routing.Router,
@@ -59,18 +59,21 @@ func NewLivekitServer(conf *config.Config,
 	signalServer *SignalServer,
 	turnServer *turn.Server,
 	currentNode routing.LocalNode,
+	clientProvider *ClientProvider,
+	participantCounter *ParticipantCounter,
 ) (s *LivekitServer, err error) {
 	s = &LivekitServer{
 		config:       conf,
-		ioService:    ioService,
 		rtcService:   rtcService,
 		router:       router,
 		roomManager:  roomManager,
 		signalServer: signalServer,
 		// turn server starts automatically
-		turnServer:  turnServer,
-		currentNode: currentNode,
-		closedChan:  make(chan struct{}),
+		turnServer:         turnServer,
+		currentNode:        currentNode,
+		clientProvider:     clientProvider,
+		participantCounter: participantCounter,
+		closedChan:         make(chan struct{}),
 	}
 
 	middlewares := []negroni.Handler{
@@ -87,7 +90,7 @@ func NewLivekitServer(conf *config.Config,
 		}),
 	}
 	if keyProvider != nil {
-		middlewares = append(middlewares, NewAPIKeyAuthMiddleware(keyProvider))
+		middlewares = append(middlewares, NewAPIKeyAuthMiddleware(clientProvider, participantCounter))
 	}
 
 	twirpLoggingHook := TwirpLogger(logger.GetLogger())
@@ -185,10 +188,6 @@ func (s *LivekitServer) Start() error {
 	}()
 
 	if err := s.router.Start(); err != nil {
-		return err
-	}
-
-	if err := s.ioService.Start(); err != nil {
 		return err
 	}
 
@@ -321,7 +320,6 @@ func (s *LivekitServer) Start() error {
 
 	s.roomManager.Stop()
 	s.signalServer.Stop()
-	s.ioService.Stop()
 
 	close(s.closedChan)
 	return nil

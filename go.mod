@@ -2,7 +2,7 @@ module github.com/livekit/livekit-server
 
 go 1.18
 
-replace github.com/livekit/protocol v1.5.4 => github.com/dTelecom/protocol v1.0.5
+replace github.com/livekit/protocol v1.5.4 => github.com/dTelecom/protocol v1.0.11
 
 //replace github.com/livekit/protocol => /var/www/dtelekom/protocol
 //replace github.com/dTelecom/p2p-realtime-database => /var/www/dtelekom/p2p-database
@@ -10,7 +10,7 @@ replace github.com/livekit/protocol v1.5.4 => github.com/dTelecom/protocol v1.0.
 require (
 	github.com/bep/debounce v1.2.1
 	github.com/d5/tengo/v2 v2.14.0
-	github.com/dTelecom/p2p-realtime-database v1.0.13-0.20230614105029-c1788fe2ed91
+	github.com/dTelecom/p2p-realtime-database v1.0.13-0.20230628064905-2b483a532829
 	github.com/dustin/go-humanize v1.0.1
 	github.com/elliotchance/orderedmap/v2 v2.2.0
 	github.com/ethereum/go-ethereum v1.11.6

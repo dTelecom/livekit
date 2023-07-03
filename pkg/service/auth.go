@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/ethereum/go-ethereum/log"
+	"math/big"
 	"net/http"
 	"strings"
 
@@ -22,6 +24,7 @@ const (
 )
 
 type grantsKey struct{}
+type apiKeyKey struct{}
 
 var (
 	ErrPermissionDenied          = errors.New("permissions denied")
@@ -31,12 +34,14 @@ var (
 
 // authentication middleware
 type APIKeyAuthMiddleware struct {
-	provider auth.KeyProviderPublicKey
+	clientProvider     *ClientProvider
+	participantCounter *ParticipantCounter
 }
 
-func NewAPIKeyAuthMiddleware(provider auth.KeyProviderPublicKey) *APIKeyAuthMiddleware {
+func NewAPIKeyAuthMiddleware(clientProvider *ClientProvider, participantCounter *ParticipantCounter) *APIKeyAuthMiddleware {
 	return &APIKeyAuthMiddleware{
-		provider: provider,
+		clientProvider:     clientProvider,
+		participantCounter: participantCounter,
 	}
 }
 
@@ -67,10 +72,17 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 			return
 		}
 
-		fmt.Printf("API KEY is %s\r\n", v.APIKey())
-		pk := m.provider.GetPublicKey(v.APIKey())
+		apiKey := v.APIKey()
+
+		client, err := m.clientProvider.ClientByAddress(r.Context(), apiKey)
+		if err != nil {
+			handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract, err: %s", apiKey, err)))
+			return
+		}
+
+		pk := client.Key
 		if pk == "" {
-			handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract", v.APIKey())))
+			handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract", apiKey)))
 			return
 		}
 
@@ -92,9 +104,22 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 			return
 		}
 
+		currentValue, err := m.participantCounter.GetCurrentValue(r.Context(), apiKey)
+		if err != nil {
+			handleError(w, http.StatusUnauthorized, fmt.Errorf("invalid checking node %s for max count participants: %s", apiKey, err))
+			return
+		}
+
+		currentValueBigInt := big.NewInt(int64(currentValue))
+		if currentValueBigInt.Cmp(client.Limit) > 0 {
+			log.Error("Max participant reached. Limit " + client.Limit.String() + ", current " + currentValueBigInt.String())
+		}
+
 		// set grants in context
-		ctx := r.Context()
-		r = r.WithContext(context.WithValue(ctx, grantsKey{}, grants))
+		ctx := context.WithValue(r.Context(), grantsKey{}, grants)
+		ctx = context.WithValue(ctx, apiKeyKey{}, v.APIKey())
+
+		r = r.WithContext(ctx)
 	}
 
 	next.ServeHTTP(w, r)
@@ -107,6 +132,15 @@ func GetGrants(ctx context.Context) *auth.ClaimGrants {
 		return nil
 	}
 	return claims
+}
+
+func GetApiKey(ctx context.Context) livekit.ApiKey {
+	val := ctx.Value(apiKeyKey{})
+	apiKey, ok := val.(string)
+	if !ok {
+		return livekit.ApiKey("")
+	}
+	return livekit.ApiKey(apiKey)
 }
 
 func WithGrants(ctx context.Context, grants *auth.ClaimGrants) context.Context {

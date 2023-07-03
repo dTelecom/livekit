@@ -54,7 +54,7 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		return nil, err
 	}
 	participantCounter := createParticipantCounter(db)
-	objectStore := createStore(p2p_databaseConfig, nodeID, participantCounter)
+	objectStore := createStore(db, p2p_databaseConfig, nodeID, participantCounter)
 	roomAllocator, err := NewRoomAllocator(conf, router, objectStore)
 	if err != nil {
 		return nil, err
@@ -88,10 +88,6 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 	}
 	ingressStore := getIngressStore(objectStore)
 	ingressService := NewIngressService(ingressConfig, nodeID, messageBus, ingressClient, ingressStore, roomService, telemetryService)
-	ioInfoService, err := NewIOInfoService(nodeID, messageBus, egressStore, ingressStore, telemetryService, rpcClient)
-	if err != nil {
-		return nil, err
-	}
 	rtcService := NewRTCService(conf, roomAllocator, objectStore, router, currentNode, telemetryService)
 	keyProviderPublicKey, err := createKeyPublicKeyProvider(conf)
 	if err != nil {
@@ -112,7 +108,12 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 	if err != nil {
 		return nil, err
 	}
-	livekitServer, err := NewLivekitServer(conf, roomService, egressService, ingressService, ioInfoService, rtcService, keyProviderPublicKey, router, roomManager, signalServer, server, currentNode)
+	ethSmartContract, err := createSmartContractClient(conf)
+	if err != nil {
+		return nil, err
+	}
+	clientProvider := createClientProvider(ethSmartContract, db)
+	livekitServer, err := NewLivekitServer(conf, roomService, egressService, ingressService, rtcService, keyProviderPublicKey, router, roomManager, signalServer, server, currentNode, clientProvider, participantCounter)
 	if err != nil {
 		return nil, err
 	}
@@ -136,6 +137,24 @@ func InitializeRouter(conf *config.Config, currentNode routing.LocalNode) (routi
 }
 
 // wire.go:
+
+func createClientProvider(contract *p2p_database.EthSmartContract, db *p2p_database.DB) *ClientProvider {
+	return NewClientProvider(db, contract)
+}
+
+func createSmartContractClient(conf *config.Config) (*p2p_database.EthSmartContract, error) {
+	contract, err := p2p_database.NewEthSmartContract(p2p_database.Config{
+		EthereumNetworkHost:     conf.Ethereum.NetworkHost,
+		EthereumNetworkKey:      conf.Ethereum.NetworkKey,
+		EthereumContractAddress: conf.Ethereum.ContractAddress,
+	}, nil)
+
+	if err != nil {
+		return nil, errors.Wrap(err, "try create contract")
+	}
+
+	return contract, nil
+}
 
 func createParticipantCounter(mainDatabase *p2p_database.DB) *ParticipantCounter {
 	return NewParticipantCounter(mainDatabase)
@@ -183,16 +202,13 @@ func createKeyPublicKeyProvider(conf *config.Config) (auth.KeyProviderPublicKey,
 }
 
 func createWebhookNotifier(conf *config.Config, provider auth.KeyProvider) (webhook.Notifier, error) {
-	wc := conf.WebHook
-	if len(wc.URLs) == 0 {
-		return nil, nil
-	}
-	secret := provider.GetSecret(wc.APIKey)
+	wallet := conf.Ethereum.WalletAddress
+	secret := provider.GetSecret(wallet)
 	if secret == "" {
 		return nil, ErrWebHookMissingAPIKey
 	}
 
-	return webhook.NewNotifier(wc.APIKey, secret, wc.URLs), nil
+	return webhook.NewNotifier(wallet, secret), nil
 }
 
 func createRedisClient(conf *config.Config) (redis.UniversalClient, error) {
@@ -202,8 +218,8 @@ func createRedisClient(conf *config.Config) (redis.UniversalClient, error) {
 	return redis2.GetRedisClient(&conf.Redis)
 }
 
-func createStore(p2pDbConfig p2p_database.Config, nodeID livekit.NodeID, participantCounter *ParticipantCounter) ObjectStore {
-	return NewLocalStore(nodeID, p2pDbConfig, participantCounter)
+func createStore(mainDatabase *p2p_database.DB, p2pDbConfig p2p_database.Config, nodeID livekit.NodeID, participantCounter *ParticipantCounter) ObjectStore {
+	return NewLocalStore(nodeID, p2pDbConfig, participantCounter, mainDatabase)
 }
 
 func getMessageBus(rc redis.UniversalClient) psrpc.MessageBus {
@@ -222,21 +238,11 @@ func getEgressClient(conf *config.Config, nodeID livekit.NodeID, bus psrpc.Messa
 }
 
 func getEgressStore(s ObjectStore) EgressStore {
-	switch store := s.(type) {
-	case *RedisStore:
-		return store
-	default:
-		return nil
-	}
+	return nil
 }
 
 func getIngressStore(s ObjectStore) IngressStore {
-	switch store := s.(type) {
-	case *RedisStore:
-		return store
-	default:
-		return nil
-	}
+	return nil
 }
 
 func getIngressConfig(conf *config.Config) *config.IngressConfig {

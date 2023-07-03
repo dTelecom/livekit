@@ -155,7 +155,7 @@ func NewRoom(
 	egressLauncher EgressLauncher,
 	roomP2PCommunicator p2p.RoomCommunicator,
 ) *Room {
-	logger := LoggerWithRoom(logger.GetLogger(), livekit.RoomName(room.Name), livekit.RoomID(room.Sid))
+	logger := LoggerWithRoom(logger.GetLogger(), livekit.RoomKey(room.Key), livekit.RoomID(room.Sid))
 
 	r := &Room{
 		protoRoom:                 proto.Clone(room).(*livekit.Room),
@@ -447,6 +447,10 @@ func (r *Room) Name() livekit.RoomName {
 	return livekit.RoomName(r.protoRoom.Name)
 }
 
+func (r *Room) Key() livekit.RoomKey {
+	return livekit.RoomKey(r.protoRoom.Key)
+}
+
 func (r *Room) ID() livekit.RoomID {
 	return livekit.RoomID(r.protoRoom.Sid)
 }
@@ -599,7 +603,7 @@ func (r *Room) Join(participant types.LocalParticipant, requestSource routing.Me
 			r.telemetry.ParticipantActive(context.Background(), r.ToProto(), p.ToProto(), &livekit.AnalyticsClientMeta{
 				ClientConnectTime: uint32(time.Since(p.ConnectedAt()).Milliseconds()),
 				ConnectionType:    string(p.GetICEConnectionType()),
-			})
+			}, p.ClaimGrants().WebHookURL)
 		} else if state == livekit.ParticipantInfo_DISCONNECTED {
 			// remove participant from room
 			go r.RemoveParticipant(p.Identity(), p.ID(), types.ParticipantCloseReasonStateDisconnected)
