@@ -1,4 +1,4 @@
-package relay
+package ortc
 
 import (
 	"context"
@@ -15,6 +15,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v3"
 
+	"github.com/livekit/livekit-server/pkg/rtc/relay"
 	"github.com/livekit/livekit-server/pkg/sfu/buffer"
 )
 
@@ -33,12 +34,6 @@ var (
 	ErrRelayNotReady    = errors.New("relay Peer is not ready")
 	ErrRelaySignalError = errors.New("relay Peer signal state error")
 )
-
-type RelayConfig struct {
-	SettingEngine webrtc.SettingEngine
-	ICEServers    []webrtc.ICEServer
-	BufferFactory *buffer.Factory
-}
 
 type offerAnswerSignal struct {
 	ICECandidates    []webrtc.ICECandidate   `json:"iceCandidates,omitempty"`
@@ -61,15 +56,6 @@ type dcEvent struct {
 	ReplyForID *uint64   `json:"replyForID"`
 	Type       eventType `json:"type"`
 	Payload    []byte    `json:"payload"`
-}
-
-type TrackParameters interface {
-	ID() string
-	StreamID() string
-	Kind() webrtc.RTPCodecType
-	Codec() webrtc.RTPCodecParameters
-	PayloadType() webrtc.PayloadType
-	RID() string
 }
 
 type OrtcRelay struct {
@@ -102,7 +88,7 @@ type OrtcRelay struct {
 	onConnectionStateChange atomic.Value // func(state webrtc.ICETransportState)
 }
 
-func NewRelay(logger logger.Logger, conf *RelayConfig) (*OrtcRelay, error) {
+func NewRelay(logger logger.Logger, conf *relay.RelayConfig) (*OrtcRelay, error) {
 	conf.SettingEngine.BufferFactory = conf.BufferFactory.GetOrNew
 
 	me := webrtc.MediaEngine{}
@@ -146,8 +132,28 @@ func NewRelay(logger logger.Logger, conf *RelayConfig) (*OrtcRelay, error) {
 	})
 
 	ice.OnConnectionStateChange(func(state webrtc.ICETransportState) {
+		var cs webrtc.ICEConnectionState
+		switch state {
+		case webrtc.ICETransportStateNew:
+			cs = webrtc.ICEConnectionStateNew
+		case webrtc.ICETransportStateChecking:
+			cs = webrtc.ICEConnectionStateChecking
+		case webrtc.ICETransportStateConnected:
+			cs = webrtc.ICEConnectionStateConnected
+		case webrtc.ICETransportStateCompleted:
+			cs = webrtc.ICEConnectionStateCompleted
+		case webrtc.ICETransportStateFailed:
+			cs = webrtc.ICEConnectionStateFailed
+		case webrtc.ICETransportStateDisconnected:
+			cs = webrtc.ICEConnectionStateDisconnected
+		case webrtc.ICETransportStateClosed:
+			cs = webrtc.ICEConnectionStateClosed
+		default:
+			logger.Warnw("OnConnectionStateChange: unhandled ICE state", nil, "state", state)
+			return
+		}
 		if f := r.onConnectionStateChange.Load(); f != nil {
-			f.(func(webrtc.ICETransportState))(state)
+			f.(func(webrtc.ICEConnectionState))(cs)
 		}
 	})
 
@@ -162,9 +168,9 @@ func (r *OrtcRelay) GetBufferFactory() *buffer.Factory {
 	return r.bufferFactory
 }
 
-func (r *OrtcRelay) IsReady() bool {
-	return r.ready
-}
+// func (r *OrtcRelay) IsReady() bool {
+// 	return r.ready
+// }
 
 func (r *OrtcRelay) Offer(signalFn func(signal []byte) ([]byte, error)) error {
 	if r.gatherer.State() == webrtc.ICEGathererStateNew {
@@ -313,7 +319,7 @@ func (r *OrtcRelay) WriteRTCP(pkts []rtcp.Packet) error {
 	return err
 }
 
-func (r *OrtcRelay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters TrackParameters, localTrack webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
+func (r *OrtcRelay) AddTrack(ctx context.Context, rtpParameters webrtc.RTPParameters, trackParameters relay.TrackParameters, localTrack webrtc.TrackLocal, mid string, trackMeta string) (*webrtc.RTPSender, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -498,7 +504,7 @@ func (r *OrtcRelay) OnTrack(f func(track *webrtc.TrackRemote, receiver *webrtc.R
 	r.onTrack.Store(f)
 }
 
-func (r *OrtcRelay) OnConnectionStateChange(f func(state webrtc.ICETransportState)) {
+func (r *OrtcRelay) OnConnectionStateChange(f func(state webrtc.ICEConnectionState)) {
 	r.onConnectionStateChange.Store(f)
 }
 

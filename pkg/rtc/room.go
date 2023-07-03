@@ -19,6 +19,7 @@ import (
 
 	"github.com/livekit/livekit-server/pkg/p2p"
 	"github.com/livekit/livekit-server/pkg/rtc/relay"
+	"github.com/livekit/livekit-server/pkg/rtc/relay/pc"
 
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
@@ -191,7 +192,7 @@ func NewRoom(
 	pendingAnswersMu := sync.Mutex{}
 
 	roomP2PCommunicator.ForEachPeer(func(peerId string) {
-		rel, err := relay.NewRelay(logger, &relay.RelayConfig{
+		rel, err := pc.NewRelay(logger, &relay.RelayConfig{
 			BufferFactory: r.GetBufferFactory(),
 			SettingEngine: config.SettingEngine,
 			ICEServers:    config.Configuration.ICEServers,
@@ -206,7 +207,7 @@ func NewRoom(
 			r.outRelayCollection.AddRelay(rel)
 		})
 
-		rel.OnConnectionStateChange(func(state webrtc.ICETransportState) {
+		rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
 			logger.Infow("Out relay connection state changed", "state", state)
 		})
 
@@ -259,7 +260,7 @@ func NewRoom(
 			pendingAnswersMu.Unlock()
 		} else {
 			// Offer
-			rel, err := relay.NewRelay(logger, &relay.RelayConfig{
+			rel, err := pc.NewRelay(logger, &relay.RelayConfig{
 				BufferFactory: r.GetBufferFactory(),
 				SettingEngine: config.SettingEngine,
 				ICEServers:    config.Configuration.ICEServers,
@@ -274,7 +275,7 @@ func NewRoom(
 				// TODO
 			})
 
-			rel.OnConnectionStateChange(func(state webrtc.ICETransportState) {
+			rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
 				logger.Infow("In-relay connection state changed", "state", state)
 			})
 
