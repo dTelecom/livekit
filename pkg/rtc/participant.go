@@ -1183,32 +1183,6 @@ func (p *ParticipantImpl) forwardTrackToRelays(publishedTrack *MediaTrack, track
 			return
 		}
 
-		// p.params.Config.BufferFactory.GetOrNew(packetio.RTCPBufferPacket, uint32(sdr.GetParameters().Encodings[0].SSRC)).(*buffer.RTCPReader).OnPacket(func(bytes []byte) {
-		// 	pkts, err := rtcp.Unmarshal(bytes)
-		// 	if err != nil {
-		// 		p.params.Logger.Errorw("Unmarshal rtcp reports", err)
-		// 		return
-		// 	}
-		// 	var rpkts []rtcp.Packet
-		// 	for _, pkt := range pkts {
-		// 		switch pk := pkt.(type) {
-		// 		case *rtcp.PictureLossIndication:
-		// 			rpkts = append(rpkts, &rtcp.PictureLossIndication{
-		// 				SenderSSRC: pk.MediaSSRC,
-		// 				MediaSSRC:  uint32(track.SSRC()),
-		// 			})
-		// 		}
-		// 	}
-		//
-		// 	if len(rpkts) > 0 {
-		// 		if err := relay.WriteRTCP(rpkts); err != nil {
-		// 			p.params.Logger.Errorw("Sending rtcp relay reports", err)
-		// 		} else {
-		// 			p.params.Logger.Infow("Strange pli sent")
-		// 		}
-		// 	}
-		// })
-
 		if err := tr.AddDownTrack(dt); err != nil {
 			p.params.Logger.Errorw("add relayed down track", err)
 		}
