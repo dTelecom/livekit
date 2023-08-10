@@ -11,6 +11,7 @@ import (
 	p2p_database "github.com/dTelecom/p2p-realtime-database"
 	logging "github.com/ipfs/go-log/v2"
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 	"github.com/pkg/errors"
 )
 
@@ -63,6 +64,14 @@ func NewRoomCommunicatorImpl(room *livekit.Room, mainDatabase *p2p_database.DB, 
 }
 
 func (c *RoomCommunicatorImpl) Close() {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	err := c.roomDatabase.Disconnect(ctx)
+	if err != nil {
+		logger.Errorw("fail disconnect db "+c.roomDatabase.Name, err)
+	}
+
 	c.cancel()
 }
 
