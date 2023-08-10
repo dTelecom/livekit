@@ -24,7 +24,9 @@ type LocalStore struct {
 	currentNodeId            livekit.NodeID
 	clientParticipantCounter *ParticipantCounter
 	nodeProvider             *NodeProvider
-	mainDatabase             *p2p_database.DB
+
+	p2pDatabaseConfig p2p_database.Config
+	mainDatabase      *p2p_database.DB
 
 	// map of roomKey => room
 	rooms        map[livekit.RoomKey]*livekit.Room
@@ -41,13 +43,16 @@ func NewLocalStore(
 	currentNodeId livekit.NodeID,
 	participantCounter *ParticipantCounter,
 	mainDatabase *p2p_database.DB,
+	p2pDatabaseConfig p2p_database.Config,
 	nodeProvider *NodeProvider,
 ) *LocalStore {
 	return &LocalStore{
 		currentNodeId:            currentNodeId,
 		clientParticipantCounter: participantCounter,
 		nodeProvider:             nodeProvider,
-		mainDatabase:             mainDatabase,
+
+		p2pDatabaseConfig: p2pDatabaseConfig,
+		mainDatabase:      mainDatabase,
 
 		rooms:             make(map[livekit.RoomKey]*livekit.Room),
 		roomInternal:      make(map[livekit.RoomKey]*livekit.RoomInternal),
@@ -68,7 +73,7 @@ func (s *LocalStore) StoreRoom(_ context.Context, room *livekit.Room, roomKey li
 	s.rooms[roomKey] = room
 	s.roomInternal[roomKey] = internal
 	if _, ok := s.roomCommunicators[roomKey]; !ok {
-		if roomCommunicator, err := p2p.NewRoomCommunicatorImpl(room, s.mainDatabase); err != nil {
+		if roomCommunicator, err := p2p.NewRoomCommunicatorImpl(room, s.mainDatabase, s.p2pDatabaseConfig); err != nil {
 			return errors.Wrap(err, "cannot create room communicator")
 		} else {
 			s.roomCommunicators[roomKey] = roomCommunicator
@@ -130,9 +135,9 @@ func (s *LocalStore) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) er
 	delete(s.rooms, roomKey)
 	delete(s.roomInternal, roomKey)
 
-	db, exists := s.roomCommunicators[roomKey]
+	roomCommunicator, exists := s.roomCommunicators[roomKey]
 	if exists {
-		db.Close()
+		roomCommunicator.Close()
 		delete(s.roomCommunicators, roomKey)
 	}
 
@@ -237,12 +242,12 @@ func (s *LocalStore) DeleteParticipant(ctx context.Context, roomKey livekit.Room
 			delete(roomParticipants, identity)
 			if participant.Relayed == false {
 				err := s.clientParticipantCounter.Decrement(ctx, string(apiKey), string(identity))
-				if err != nil {
+				if err != nil && !errors.Is(err, p2p_database.ErrKeyNotFound) {
 					logger.Errorw("cannot decrement participant count", err)
 				}
 				err = s.nodeProvider.DecrementParticipants(ctx, s.mainDatabase.GetHost().ID().String())
-				if err != nil {
-					logger.Errorw("decrement participants count: %s", err)
+				if err != nil && !errors.Is(err, p2p_database.ErrKeyNotFound) {
+					logger.Errorw("decrement participants count", err)
 				}
 			}
 		}

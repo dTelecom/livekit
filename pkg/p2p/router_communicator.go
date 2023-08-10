@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"log"
 
 	p2p_database "github.com/dTelecom/p2p-realtime-database"
@@ -83,6 +84,7 @@ func (c *RouterCommunicatorImpl) Publish(message *livekit.RTCNodeMessage) {
 		log.Printf("RouterCommunicatorImpl Publish cannot marshal %v", message)
 	}
 
+	fmt.Printf("publish message to topic %s\r\n", c.topic)
 	if _, err := c.mainDatabase.Publish(c.ctx, c.topic, packRouterMessage(data)); err != nil {
 		log.Printf("RouterCommunicatorImpl cannot publish %v", err)
 	}

@@ -2,11 +2,13 @@ package routing
 
 import (
 	"context"
-	"go.uber.org/atomic"
-	"google.golang.org/protobuf/proto"
+	"fmt"
 	"log"
 	"sync"
 	"time"
+
+	"go.uber.org/atomic"
+	"google.golang.org/protobuf/proto"
 
 	p2p_database "github.com/dTelecom/p2p-realtime-database"
 	"github.com/livekit/livekit-server/pkg/p2p"
@@ -129,6 +131,7 @@ func (r *LocalRouter) StartParticipantSignalWithNodeID(ctx context.Context, room
 }
 
 func (r *LocalRouter) WriteParticipantRTC(_ context.Context, roomKey livekit.RoomKey, identity livekit.ParticipantIdentity, msg *livekit.RTCNodeMessage) error {
+	fmt.Println("WriteParticipantRTC")
 	r.lock.Lock()
 	if r.rtcMessageChan.IsClosed() {
 		// create a new one
@@ -156,6 +159,7 @@ func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMe
 func (r *LocalRouter) WriteRoomRTC(ctx context.Context, roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) error {
 	msg.ParticipantKey = string(ParticipantKeyLegacy(roomKey, ""))
 	msg.ParticipantKeyB62 = string(ParticipantKey(roomKey, ""))
+	fmt.Printf("Write room RTC %v %v\n", roomKey, msg)
 	r.writeToP2P(roomKey, msg)
 	return r.WriteNodeRTC(ctx, r.currentNode.Id, msg)
 }

@@ -222,7 +222,7 @@ func createStore(
 	conf *config.Config,
 	nodeProvider *NodeProvider,
 ) ObjectStore {
-	return NewLocalStore(nodeID, participantCounter, mainDatabase, nodeProvider)
+	return NewLocalStore(nodeID, participantCounter, mainDatabase, p2pDbConfig, nodeProvider)
 }
 
 func getMessageBus(rc redis.UniversalClient) psrpc.MessageBus {
