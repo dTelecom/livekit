@@ -112,6 +112,10 @@ func (c *RoomCommunicatorImpl) init() error {
 	return nil
 }
 
+func (c *RoomCommunicatorImpl) GetPeerId() string {
+	return c.mainDatabase.GetHost().ID().String()
+}
+
 func (c *RoomCommunicatorImpl) publishAd(roomMessagesTopic string) {
 	if c.closed.Load() {
 		log.Printf("RoomCommunicatorImpl closed %v", c.key)

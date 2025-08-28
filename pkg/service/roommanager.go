@@ -561,6 +561,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 			ICEServers:    rtcConfig.Configuration.ICEServers,
 			RelayUDPMux:   rtcConfig.RelayUDPMux,
 			RelayPort:     rtcConfig.RelayPort,
+			OwnPeerId:     roomCommunicator.GetPeerId(),
 		})
 		if err != nil {
 			logger.Errorw("New out relay", err)
@@ -663,6 +664,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 				ICEServers:    rtcConfig.Configuration.ICEServers,
 				RelayUDPMux:   rtcConfig.RelayUDPMux,
 				RelayPort:     rtcConfig.RelayPort,
+				OwnPeerId:     roomCommunicator.GetPeerId(),
 			})
 			if err != nil {
 				logger.Errorw("New in-relay", err)

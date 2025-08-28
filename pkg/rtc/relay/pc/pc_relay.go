@@ -139,6 +139,13 @@ func NewRelay(logger logger.Logger, conf *relay.RelayConfig) (*PcRelay, error) {
 	}
 	if conf.RelayPort != 0 {
 		conf.SettingEngine.SetICEUDPMux(conf.RelayUDPMux)
+		if conf.OwnPeerId != "" && conf.OwnPeerId != conf.ID {
+			if conf.OwnPeerId > conf.ID {
+				conf.SettingEngine.SetAnsweringDTLSRole(webrtc.DTLSRoleClient)
+			} else {
+				conf.SettingEngine.SetAnsweringDTLSRole(webrtc.DTLSRoleServer)
+			}
+		}
 	}
 
 	pc, pcErr := webrtc.
@@ -177,6 +184,38 @@ func NewRelay(logger logger.Logger, conf *relay.RelayConfig) (*PcRelay, error) {
 			return
 		}
 	})
+
+	pc.OnICEConnectionStateChange(func(st webrtc.ICEConnectionState) {
+		r.logger.Debugw("ICE connection state changed", "state", st)
+		r.logger.Debugw("SCTP state", "state", pc.SCTP().State())
+
+		if st == webrtc.ICEConnectionStateConnected || st == webrtc.ICEConnectionStateCompleted {
+			if tr := pc.SCTP().Transport(); tr != nil && tr.ICETransport() != nil {
+				if p, err := tr.ICETransport().GetSelectedCandidatePair(); err == nil && p != nil {
+					r.logger.Debugw("ICE selected pair",
+						"local", fmt.Sprintf("%s:%d/%s", p.Local.Address, p.Local.Port, p.Local.Typ),
+						"remote", fmt.Sprintf("%s:%d/%s", p.Remote.Address, p.Remote.Port, p.Remote.Typ),
+					)
+				} else {
+					r.logger.Debugw("ICE selected pair error", "error", err)
+				}
+			}
+		}
+	})
+
+	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
+		r.logger.Debugw("PC connection state changed", "state", st.String())
+	})
+
+	if pc.SCTP() != nil {
+		if tr := pc.SCTP().Transport(); tr != nil {
+			tr.OnStateChange(func(s webrtc.DTLSTransportState) {
+				r.logger.Debugw("DTLS state changed", "state", s)
+			})
+		} else {
+			r.logger.Debugw("SCTP transport is nil")
+		}
+	}
 
 	return r, nil
 }
@@ -248,7 +287,9 @@ func (r *PcRelay) Offer(signalFn func(offerData []byte) ([]byte, error)) error {
 
 	r.signalingDC.OnMessage(r.onSignalingDataChannelMessage)
 	r.signalingDC.OnOpen(func() {
+		r.logger.Debugw("PcRelay.Offer - signalingDC.OnOpen opened")
 		if f := r.onReady.Load(); f != nil {
+			r.logger.Debugw("PcRelay.Offer - signalingDC.OnOpen loaded")
 			f.(func())()
 		}
 	})
@@ -380,9 +421,13 @@ func (r *PcRelay) WriteRTCP(pkts []rtcp.Packet) error {
 }
 
 func (r *PcRelay) AddTrack(ctx context.Context, track webrtc.TrackLocal, trackRid string, trackMeta []byte) (*webrtc.RTPSender, error) {
+	r.logger.Debugw("PcRelay.AddTrack - adding track")
+
 	if rtpSender, err := r.pc.AddTrack(track); err != nil {
 		return nil, err
 	} else {
+		r.logger.Debugw("PcRelay.AddTrack - adding track - done, sending signal")
+
 		go r.resignal()
 
 		signal := &addTrackSignal{
@@ -484,6 +529,8 @@ func (r *PcRelay) send(event dcEvent, replyExpected bool) (<-chan []byte, error)
 		reply = make(chan []byte, 1)
 		r.pendingReplies.Store(event.ID, reply)
 	}
+
+	r.logger.Debugw("PcRelay.send - signalingDC.Send", "data", string(data))
 	if err := r.signalingDC.Send(data); err != nil {
 		r.pendingReplies.Delete(event.ID)
 		return nil, fmt.Errorf("can not send DC event: %w", err)
@@ -492,6 +539,7 @@ func (r *PcRelay) send(event dcEvent, replyExpected bool) (<-chan []byte, error)
 }
 
 func (r *PcRelay) onPeerConnectionTrack(trackRemote *webrtc.TrackRemote, rtpReceiver *webrtc.RTPReceiver) {
+	r.logger.Debugw("PcRelay.onPeerConnectionTrack - trackReceived")
 	r.pendingTracksMu.Lock()
 	defer r.pendingTracksMu.Unlock()
 
