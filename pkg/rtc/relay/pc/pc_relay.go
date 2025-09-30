@@ -590,6 +590,16 @@ func (r *PcRelay) send(event dcEvent, replyExpected bool) (<-chan []byte, error)
 		r.pendingReplies.Delete(event.ID)
 		r.logger.Errorw("Failed to send data channel event", err, "eventType", event.Type, "relayID", r.id, "side", r.side, "replyExpected", replyExpected)
         prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "dc_send_send").Add(1)
+        if 	r.State() == RelayStateOpen {
+			if !r.isReconnecting.Load() {
+				r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
+				r.Close()
+			} else {
+				r.logger.Debugw("Signaling data channel closed during reconnect, ignoring", "relayID", r.id, "side", r.side)
+			}
+		} else {
+			r.logger.Infow("Signaling data channel not open", "relayID", r.id, "side", r.side)
+		}
 		return nil, fmt.Errorf("can not send DC event: %w", err)
 	}
 	return reply, nil
