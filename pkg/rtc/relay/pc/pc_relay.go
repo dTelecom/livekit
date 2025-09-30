@@ -310,8 +310,7 @@ func (r *PcRelay) Offer(signalFn func(offerData []byte) ([]byte, error)) error {
 		}
 	})
 	r.signalingDC.OnClose(func() {
-		state := r.state.Load()
-		if !r.isReconnecting.Load() || state == int32(RelayStateClosed) || state == int32(RelayStateClosing) {
+		if !r.isReconnecting.Load() {
 			r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
 			r.Close()
 		} else {
