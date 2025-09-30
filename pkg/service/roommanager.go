@@ -476,6 +476,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 	newRoom := rtc.NewRoom(ri, internal, rtcConfig, relayRtcConfig, &r.config.Audio, r.serverInfo, r.telemetry, r.egressLauncher)
 
 	newRoom.OnClose(func() {
+		newRoom.Logger.Infow("Starting to close room", "roomID", newRoom.ID(), "roomName", newRoom.Name())
 		roomInfo := newRoom.ToProto()
 
 		// graceful close local relays
@@ -620,6 +621,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 		outRelayCollection.ForEach(func(rly relay.Relay) {
 			if rly.ID() == peerId {
 				rel = rly.(*pc.PcRelay)
+				newRoom.Logger.Debugw("Found existing out relay", "relayID", rel.ID(), "roomID", newRoom.ID(), "roomName", newRoom.Name(), "state", rel.State())
 			}
 		})
 
@@ -745,6 +747,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 				inRelayCollection.ForEach(func(relay relay.Relay) {
 					if relay.ID() == fromPeerId {
 						rel = relay.(*pc.PcRelay)
+						newRoom.Logger.Debugw("Found existing in relay", "relayID", rel.ID(), "roomID", newRoom.ID(), "roomName", newRoom.Name(), "state", rel.State())
 					}
 				})
 
@@ -778,6 +781,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 						// Reconnect
 						if state == webrtc.ICEConnectionStateDisconnected || state == webrtc.ICEConnectionStateFailed {
 							logger.Infow("In-relay starting to reconnect", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+							prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "success", "init_reconnect_request").Add(1)
 							rel.StartReconnect(func(peerId string) error {
 								_, err = roomCommunicator.SendMessage(fromPeerId, packReconnectRequest(peerId))
 								if err != nil {
@@ -1390,15 +1394,18 @@ func (r *RoomManager) closeLocalRelayConnectionsFiltered(ctx context.Context, ro
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
-	closeCollection := func(coll *relay.Collection) {
+	closeAndWait := func(coll *relay.Collection) (toRemove []relay.Relay) {
 		if coll == nil {
-			return
+			return nil
 		}
-		coll.ForEach(func(rel relay.Relay) {
-			if filter != nil && !filter(rel) {
-				return
-			}
 
+		coll.ForEach(func(rel relay.Relay) {
+			if filter == nil || filter(rel) {
+				toRemove = append(toRemove, rel)
+			}
+		})
+
+		for _, rel := range toRemove {
 			wg.Add(1)
 			go func(rel relay.Relay) {
 				defer wg.Done()
@@ -1412,13 +1419,21 @@ func (r *RoomManager) closeLocalRelayConnectionsFiltered(ctx context.Context, ro
 					rel.Close()
 				}
 			}(rel)
-		})
+		}
+		return toRemove
 	}
 
-	closeCollection(r.outRelayCollections[roomKey])
-	closeCollection(r.inRelayCollections[roomKey])
+	outToRemove := closeAndWait(r.outRelayCollections[roomKey])
+	inToRemove  := closeAndWait(r.inRelayCollections[roomKey])
 
 	wg.Wait()
+
+	for _, rel := range outToRemove {
+		r.outRelayCollections[roomKey].RemoveRelay(rel)
+	}
+	for _, rel := range inToRemove {
+		r.inRelayCollections[roomKey].RemoveRelay(rel)
+	}
 }
 
 func (r *RoomManager) CloseLocalRelayConnections(ctx context.Context, roomKey livekit.RoomKey) {

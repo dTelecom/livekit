@@ -218,6 +218,7 @@ func (r *PcRelay) createPeerConnection(conf *relay.RelayConfig) (*webrtc.PeerCon
 			channel.OnOpen(func() {
 				r.logger.Infow("Signaling data channel opened", "relayID", r.id, "side", r.side)
 				r.state.Store(int32(RelayStateOpen))
+				r.isReconnecting.Store(false)
 				if f := r.onReady.Load(); f != nil {
 					f.(func())()
 				}
@@ -306,6 +307,15 @@ func (r *PcRelay) Offer(signalFn func(offerData []byte) ([]byte, error)) error {
 	r.signalingDC.OnOpen(func() {
 		if f := r.onReady.Load(); f != nil {
 			f.(func())()
+		}
+	})
+	r.signalingDC.OnClose(func() {
+		state := r.state.Load()
+		if !r.isReconnecting.Load() || state == int32(RelayStateClosed) || state == int32(RelayStateClosing) {
+			r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
+			r.Close()
+		} else {
+			r.logger.Debugw("Signaling data channel closed during reconnect, ignoring", "relayID", r.id, "side", r.side)
 		}
 	})
 
