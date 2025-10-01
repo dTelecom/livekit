@@ -732,7 +732,7 @@ func (p *RelayedParticipantImpl) mediaTrackReceived(track *webrtc.TrackRemote, r
 		})
 	}
 
-	if mt.AddReceiver(rtpReceiver, track, rid, p.twcc, mid) {
+	if p.addReceiverWithBufferWaiting(mt, rtpReceiver, track, rid, mid) {
 		// TODO p.removeMutedTrackNotFired(mt)
 		if newTrack {
 			go p.handleTrackPublished(mt)
@@ -740,6 +740,16 @@ func (p *RelayedParticipantImpl) mediaTrackReceived(track *webrtc.TrackRemote, r
 	}
 
 	return mt, newTrack
+}
+
+func (p *RelayedParticipantImpl) addReceiverWithBufferWaiting(mt *MediaTrack, rtpReceiver *webrtc.RTPReceiver, track *webrtc.TrackRemote, rid, mid string) bool {
+	for i := 0; i < 5; i++ {
+		if buff, rtcp := p.params.Config.BufferFactory.GetBufferPair(uint32(track.SSRC())); buff != nil && rtcp != nil {
+			return mt.AddReceiver(rtpReceiver, track, rid, p.twcc, mid)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	return mt.AddReceiver(rtpReceiver, track, rid, p.twcc, mid)
 }
 
 func (p *RelayedParticipantImpl) getPublishedTrackBySdpCid(clientId string) types.MediaTrack {
