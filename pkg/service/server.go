@@ -345,6 +345,32 @@ func (s *LivekitServer) Stop(force bool) {
 	<-s.closedChan
 }
 
+func (s *LivekitServer) StopAndMigrate() {
+	// wait for all participants to exit
+	s.router.Drain()
+
+	s.roomManager.MigrateAllParticipants()
+
+	partTicker := time.NewTicker(5 * time.Second)
+	waitingForParticipants := s.roomManager.HasLocalParticipants()
+	for waitingForParticipants {
+		<-partTicker.C
+		logger.Infow("waiting for participants to exit")
+		waitingForParticipants = s.roomManager.HasLocalParticipants()
+	}
+	partTicker.Stop()
+
+	if !s.running.Swap(false) {
+		return
+	}
+
+	s.router.Stop()
+	close(s.doneChan)
+
+	// wait for fully closed
+	<-s.closedChan
+}
+
 func (s *LivekitServer) RoomManager() *RoomManager {
 	return s.roomManager
 }

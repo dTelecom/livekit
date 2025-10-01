@@ -206,6 +206,23 @@ func (r *RoomManager) HasParticipants() bool {
 	return false
 }
 
+func (r *RoomManager) HasLocalParticipants() bool {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+
+	for _, room := range r.rooms {
+		if len(room.GetParticipants()) != 0 {
+			for _, p := range room.GetParticipants() {
+				if _, ok := p.(*rtc.ParticipantImpl); ok {
+					return true
+				}
+			}
+		}
+	}
+
+	return false
+}
+
 func (r *RoomManager) Stop() {
 	// disconnect all clients
 	r.lock.RLock()
@@ -1427,7 +1444,7 @@ func (r *RoomManager) closeLocalRelayConnectionsFiltered(ctx context.Context, ro
 	}
 
 	outToRemove := closeAndWait(r.outRelayCollections[roomKey])
-	inToRemove  := closeAndWait(r.inRelayCollections[roomKey])
+	inToRemove := closeAndWait(r.inRelayCollections[roomKey])
 
 	wg.Wait()
 
@@ -1534,5 +1551,29 @@ func (r *RoomManager) SaveClientsBandwidth() {
 	err := r.trafficManager.SetValue(ctx, bandwidthByApiKey)
 	if err != nil {
 		logger.Errorw("could not set bandwidth", err)
+	}
+}
+
+func (r *RoomManager) MigrateAllParticipants() {
+	r.lock.RLock()
+	rooms := make([]*rtc.Room, 0, len(r.rooms))
+	for _, rm := range r.rooms {
+		rooms = append(rooms, rm)
+	}
+	r.lock.RUnlock()
+
+	for _, room := range rooms {
+		participants := room.GetParticipants()
+		for _, p := range participants {
+			if _, ok := p.(*rtc.RelayedParticipantImpl); ok {
+				continue
+			}
+
+			logger.Infow("Migrating participant", "identity", p.Identity(), "roomKey", room.Key(), "roomID", room.ID())
+			if pi, ok := p.(*rtc.ParticipantImpl); ok {
+				pi.IssueFullReconnect(types.ParticipantCloseReasonServiceRequestRemoveParticipant)
+				logger.Debugw("Migration message has been sent to participant", "identity", p.Identity(), "roomKey", room.Key(), "roomID", room.ID())
+			}
+		}
 	}
 }
