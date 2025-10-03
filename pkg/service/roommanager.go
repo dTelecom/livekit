@@ -789,7 +789,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 						return
 					}
 
-					inRelayCollection.AddRelay(rel)
+					// inRelayCollection.AddRelay(rel)
 
 					rel.OnReady(func() {
 						logger.Infow("In-relay is ready", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
