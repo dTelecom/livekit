@@ -139,6 +139,9 @@ func (r *RoomManager) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) e
 	delete(r.inRelayCollections, roomKey)
 	r.lock.Unlock()
 
+	// graceful close local relays
+	r.CloseLocalRelayConnections(ctx, roomKey)
+
 	var err, err2 error
 	wg := sync.WaitGroup{}
 	wg.Add(2)
@@ -467,7 +470,6 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 	r.lock.Lock()
 
 	currentRoom := r.rooms[roomKey]
-	currentPeerId := roomCommunicator.PeerId()
 	currentOutRelayCollection := r.outRelayCollections[roomKey]
 	currentInRelayCollection := r.inRelayCollections[roomKey]
 
@@ -495,14 +497,6 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 	newRoom.OnClose(func() {
 		newRoom.Logger.Infow("Starting to close room", "roomID", newRoom.ID(), "roomName", newRoom.Name())
 		roomInfo := newRoom.ToProto()
-
-		// graceful close local relays
-		r.CloseLocalRelayConnections(ctx, roomKey)
-
-		if err := r.SendCloseConnectionsMessage(ctx, roomKey, currentPeerId); err != nil {
-			newRoom.Logger.Errorw("Could not send graceful shutdown request to outgoing relays", err)
-			prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "send_close_connections_message").Add(1)
-		}
 
 		r.telemetry.RoomEnded(ctx, roomInfo)
 		prometheus.RoomEnded(time.Unix(roomInfo.CreationTime, 0))
@@ -1029,8 +1023,6 @@ func (r *RoomManager) handleRTCMessage(ctx context.Context, roomKey livekit.Room
 		}
 	case *livekit.RTCNodeMessage_DeleteRoom:
 		room.Logger.Infow("Deleting room", "roomKey", roomKey, "roomID", room.ID(), "nodeID", r.currentNode.Id)
-
-		r.CloseLocalRelayConnections(ctx, roomKey)
 
 		for _, p := range room.GetParticipants() {
 			_ = p.Close(true, types.ParticipantCloseReasonServiceRequestDeleteRoom)
