@@ -646,6 +646,8 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 			outRelayCollection.RemoveRelay(rel)
 		}
 
+		logger.Infow("Out relay not found, creating new one", "peerId", peerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+
 		rel, err := pc.NewRelay(newRoom.Logger, &relay.RelayConfig{
 			ID:            peerId,
 			BufferFactory: newRoom.GetBufferFactory(),
@@ -789,7 +791,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 						return
 					}
 
-					// inRelayCollection.AddRelay(rel)
+					inRelayCollection.AddRelay(rel)
 
 					rel.OnReady(func() {
 						logger.Infow("In-relay is ready", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
@@ -799,7 +801,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 						logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
 
 						// Reconnect
-						if state == webrtc.ICEConnectionStateDisconnected || state == webrtc.ICEConnectionStateFailed {
+						if state == webrtc.ICEConnectionStateFailed {
 							logger.Infow("In-relay starting to reconnect", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
 							prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "success", "init_reconnect_request").Add(1)
 							rel.StartReconnect(func(peerId string) error {
