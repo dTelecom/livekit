@@ -132,15 +132,18 @@ func (r *RoomManager) GetRoom(_ context.Context, roomKey livekit.RoomKey) *rtc.R
 
 // DeleteRoom completely deletes all room information, including active sessions, room store, and routing info
 func (r *RoomManager) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) error {
-	logger.Infow("Deleting room state", "room", roomKey, "nodeID", r.currentNode.Id)
+	logger.Debugw("DeleteRoom room", "room", roomKey, "nodeID", r.currentNode.Id)
+
+	// graceful close local relays
+	r.CloseLocalRelayConnections(roomKey)
+
+	logger.Debugw("Deleting room state", "room", roomKey, "nodeID", r.currentNode.Id)
+
 	r.lock.Lock()
 	delete(r.rooms, roomKey)
 	delete(r.outRelayCollections, roomKey)
 	delete(r.inRelayCollections, roomKey)
 	r.lock.Unlock()
-
-	// graceful close local relays
-	r.CloseLocalRelayConnections(ctx, roomKey)
 
 	var err, err2 error
 	wg := sync.WaitGroup{}
@@ -160,6 +163,8 @@ func (r *RoomManager) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) e
 	if err2 != nil {
 		err = err2
 	}
+
+	logger.Debugw("Deled room state", "room", roomKey, "nodeID", r.currentNode.Id)
 
 	return err
 }
@@ -760,6 +765,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 					if relay.ID() == fromPeerId {
 						rel = relay.(*pc.PcRelay)
 						if rel.State() == pc.RelayStateClosed || rel.State() == pc.RelayStateClosing {
+							inRelayCollection.RemoveRelay(rel)
 							rel = nil
 						}
 						newRoom.Logger.Debugw("Found existing in relay", "relayID", rel.ID(), "roomID", newRoom.ID(), "roomName", newRoom.Name(), "state", rel.State())
@@ -1028,14 +1034,6 @@ func (r *RoomManager) handleRTCMessage(ctx context.Context, roomKey livekit.Room
 			_ = p.Close(true, types.ParticipantCloseReasonServiceRequestDeleteRoom)
 		}
 		room.Close()
-	case *livekit.RTCNodeMessage_Request:
-		peerId := msg.ConnectionId
-		if peerId == "" {
-			return
-		}
-
-		room.Logger.Infow("Close local connections with peer", "roomKey", roomKey, "roomID", room.ID(), "peerID", peerId, "nodeID", r.currentNode.Id)
-		r.CloseLocalRelayConnectionsById(ctx, roomKey, peerId)
 	case *livekit.RTCNodeMessage_UpdateSubscriptions:
 		if participant == nil {
 			return
@@ -1377,85 +1375,16 @@ type signalPeerMessage struct {
 	Signal  string `json:"signal"`
 }
 
-func (r *RoomManager) SendDeleteRoomMessage(ctx context.Context, roomKey livekit.RoomKey) error {
-	shutdownMsg := &livekit.RTCNodeMessage{
-		Message: &livekit.RTCNodeMessage_DeleteRoom{
-			DeleteRoom: &livekit.DeleteRoomRequest{
-				Room: string(roomKey),
-			},
-		},
-		SenderTime: time.Now().Unix(),
-	}
-
-	return r.router.WriteRoomRTC(ctx, roomKey, shutdownMsg)
-}
-
-func (r *RoomManager) SendCloseConnectionsMessage(ctx context.Context, roomKey livekit.RoomKey, peerId string) error {
-	closeConnMsg := &livekit.RTCNodeMessage{
-		ConnectionId: peerId,
-		RoomName:     string(roomKey),
-		Message: &livekit.RTCNodeMessage_Request{
-			Request: &livekit.SignalRequest{},
-		},
-	}
-
-	return r.router.WriteRoomRTC(ctx, roomKey, closeConnMsg)
-}
-
-func (r *RoomManager) closeLocalRelayConnectionsFiltered(ctx context.Context, roomKey livekit.RoomKey, filter func(relay.Relay) bool) {
-	var wg sync.WaitGroup
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
-
-	closeAndWait := func(coll *relay.Collection) (toRemove []relay.Relay) {
-		if coll == nil {
-			return nil
-		}
-
-		coll.ForEach(func(rel relay.Relay) {
-			if filter == nil || filter(rel) {
-				toRemove = append(toRemove, rel)
-			}
-		})
-
-		for _, rel := range toRemove {
-			wg.Add(1)
-			go func(rel relay.Relay) {
-				defer wg.Done()
-				if pr, ok := rel.(*pc.PcRelay); ok {
-					pr.Close()
-					select {
-					case <-pr.Closed():
-					case <-ctx.Done():
-					}
-				} else {
-					rel.Close()
-				}
-			}(rel)
-		}
-		return toRemove
-	}
-
-	outToRemove := closeAndWait(r.outRelayCollections[roomKey])
-	inToRemove := closeAndWait(r.inRelayCollections[roomKey])
-
-	wg.Wait()
-
-	for _, rel := range outToRemove {
-		r.outRelayCollections[roomKey].RemoveRelay(rel)
-	}
-	for _, rel := range inToRemove {
-		r.inRelayCollections[roomKey].RemoveRelay(rel)
-	}
-}
-
-func (r *RoomManager) CloseLocalRelayConnections(ctx context.Context, roomKey livekit.RoomKey) {
-	r.closeLocalRelayConnectionsFiltered(ctx, roomKey, nil)
-}
-
-func (r *RoomManager) CloseLocalRelayConnectionsById(ctx context.Context, roomKey livekit.RoomKey, relayId string) {
-	r.closeLocalRelayConnectionsFiltered(ctx, roomKey, func(rel relay.Relay) bool {
-		return rel.ID() == relayId
+func (r *RoomManager) CloseLocalRelayConnections(roomKey livekit.RoomKey) {
+	currentOutRelayCollection := r.outRelayCollections[roomKey]
+	currentInRelayCollection := r.inRelayCollections[roomKey]
+	currentOutRelayCollection.ForEach(func(relay relay.Relay) {
+		rel := relay.(*pc.PcRelay)
+		currentOutRelayCollection.RemoveRelay(rel)
+	})
+	currentInRelayCollection.ForEach(func(relay relay.Relay) {
+		rel := relay.(*pc.PcRelay)
+		currentInRelayCollection.RemoveRelay(rel)
 	})
 }
 

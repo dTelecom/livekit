@@ -47,6 +47,8 @@ func (c *Collection) ForEach(f func(relay Relay)) {
 }
 
 func (c *Collection) RemoveRelay(relay Relay) {
+	relay.Close()
+
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
