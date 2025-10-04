@@ -137,8 +137,6 @@ type PcRelay struct {
 
 	offerMu sync.Mutex
 
-	isReconnecting atomic.Bool
-
 	conf *relay.RelayConfig
 
 	logger logger.Logger
@@ -217,7 +215,6 @@ func (r *PcRelay) createPeerConnection(conf *relay.RelayConfig) (*webrtc.PeerCon
 			channel.OnOpen(func() {
 				r.logger.Infow("Signaling data channel opened", "relayID", r.id, "side", r.side)
 				r.state.Store(int32(RelayStateOpen))
-				r.isReconnecting.Store(false)
 				if f := r.onReady.Load(); f != nil {
 					f.(func())()
 				}
@@ -309,12 +306,8 @@ func (r *PcRelay) Offer(signalFn func(offerData []byte) ([]byte, error)) error {
 		}
 	})
 	r.signalingDC.OnClose(func() {
-		if !r.isReconnecting.Load() {
-			r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
-			r.Close()
-		} else {
-			r.logger.Debugw("Signaling data channel closed during reconnect, ignoring", "relayID", r.id, "side", r.side)
-		}
+		r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
+		r.Close()
 	})
 
 	offer, offerErr := r.pc.CreateOffer(nil)
@@ -577,12 +570,8 @@ func (r *PcRelay) send(event dcEvent, replyExpected bool) (<-chan []byte, error)
 		r.logger.Errorw("Failed to send data channel event", err, "eventType", event.Type, "relayID", r.id, "side", r.side, "replyExpected", replyExpected)
 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "dc_send_send").Add(1)
 		if r.State() == RelayStateOpen {
-			if !r.isReconnecting.Load() {
-				r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
-				r.Close()
-			} else {
-				r.logger.Debugw("Signaling data channel closed during reconnect, ignoring", "relayID", r.id, "side", r.side)
-			}
+			r.logger.Infow("Signaling data channel closed, closing relay", "relayID", r.id, "side", r.side)
+			r.Close()
 		} else {
 			r.logger.Infow("Signaling data channel not open", "relayID", r.id, "side", r.side)
 		}
@@ -773,67 +762,6 @@ func (r *PcRelay) Close() {
 		r.signalClosed()
 	}()
 	r.logger.Debugw("Relay close done", "relayID", r.id, "side", r.side)
-}
-
-func (r *PcRelay) StartReconnect(inSchedule func(peerId string) error) {
-	if r.side != "in" {
-		return
-	}
-
-	if !r.isReconnecting.CompareAndSwap(false, true) {
-		return
-	}
-
-	go func() {
-		defer r.isReconnecting.Store(false)
-
-		_ = r.pc.Close()
-
-		r.pendingTracksMu.Lock()
-		r.pendingInfoTracks = map[webrtc.SSRC]pendingInfoTrack{}
-		r.pendingWebrtcTracks = map[webrtc.SSRC]pendingWebrtcTrack{}
-		r.pendingTracksMu.Unlock()
-
-		pc, err := r.createPeerConnection(r.conf)
-		if err != nil {
-			r.logger.Errorw("recreate PC failed", err, "relayID", r.id, "side", r.side)
-			r.StartReconnect(inSchedule)
-			return
-		}
-		r.pc = pc
-		r.pc.OnICEConnectionStateChange(r.onICEChange.Load().(func(webrtc.ICEConnectionState)))
-		r.state.Store(int32(RelayStateConnecting))
-
-		if err := inSchedule(r.id); err != nil {
-			r.logger.Errorw("send RECONNECT_REQUEST failed", err, "relayID", r.id, "side", r.side)
-			r.StartReconnect(inSchedule)
-			return
-		}
-	}()
-}
-
-func (r *PcRelay) RecreatePc() error {
-	if r.pc != nil {
-		_ = r.pc.Close()
-	}
-
-	r.pendingTracksMu.Lock()
-	r.pendingInfoTracks = map[webrtc.SSRC]pendingInfoTrack{}
-	r.pendingWebrtcTracks = map[webrtc.SSRC]pendingWebrtcTrack{}
-	r.pendingTracksMu.Unlock()
-
-	r.signalingDC = nil
-	r.pendingReplies = sync.Map{}
-
-	pc, err := r.createPeerConnection(r.conf)
-	if err != nil {
-		return err
-	}
-	r.pc = pc
-	r.pc.OnICEConnectionStateChange(r.onICEChange.Load().(func(webrtc.ICEConnectionState)))
-
-	r.state.Store(int32(RelayStateConnecting))
-	return nil
 }
 
 func (r *PcRelay) State() relayState {
