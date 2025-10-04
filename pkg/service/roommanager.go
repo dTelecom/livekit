@@ -704,7 +704,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 		rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
 			logger.Infow("Out relay connection state changed", "state", state.String(), "relayID", rel.ID(), "roomKey", roomKey, "nodeID", r.currentNode.Id)
 
-			if state == webrtc.ICEConnectionStateClosed || state == webrtc.ICEConnectionStateFailed {
+			if state == webrtc.ICEConnectionStateFailed {
 				roomCommunicator.RemovePeer(peerId)
 			}
 		})
@@ -802,14 +802,14 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 						// Reconnect
 						if state == webrtc.ICEConnectionStateFailed {
 							logger.Infow("In-relay starting to reconnect", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-							prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "success", "init_reconnect_request").Add(1)
-							rel.StartReconnect(func(peerId string) error {
-								_, err = roomCommunicator.SendMessage(fromPeerId, packReconnectRequest(peerId))
-								if err != nil {
-									prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "send_reconnect_request").Add(1)
-								}
-								return err
-							})
+							// prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "success", "init_reconnect_request").Add(1)
+							// rel.StartReconnect(func(peerId string) error {
+							// 	_, err = roomCommunicator.SendMessage(fromPeerId, packReconnectRequest(peerId))
+							// 	if err != nil {
+							// 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "send_reconnect_request").Add(1)
+							// 	}
+							// 	return err
+							// })
 						}
 					})
 
