@@ -132,15 +132,13 @@ func (r *RoomManager) GetRoom(_ context.Context, roomKey livekit.RoomKey) *rtc.R
 
 // DeleteRoom completely deletes all room information, including active sessions, room store, and routing info
 func (r *RoomManager) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) error {
-	logger.Debugw("DeleteRoom room", "room", roomKey, "nodeID", r.currentNode.Id)
-
-	// graceful close local relays
-	r.CloseLocalRelayConnections(roomKey)
 
 	logger.Debugw("Deleting room state", "room", roomKey, "nodeID", r.currentNode.Id)
 
 	r.lock.Lock()
 	delete(r.rooms, roomKey)
+	currentOutRelayCollection := r.outRelayCollections[roomKey]
+	currentInRelayCollection := r.inRelayCollections[roomKey]
 	delete(r.outRelayCollections, roomKey)
 	delete(r.inRelayCollections, roomKey)
 	r.lock.Unlock()
@@ -163,6 +161,18 @@ func (r *RoomManager) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) e
 	if err2 != nil {
 		err = err2
 	}
+
+	// also close relays
+	go func() {
+		currentOutRelayCollection.ForEach(func(relay relay.Relay) {
+			rel := relay.(*pc.PcRelay)
+			rel.Close()
+		})
+		currentInRelayCollection.ForEach(func(relay relay.Relay) {
+			rel := relay.(*pc.PcRelay)
+			rel.Close()
+		})
+	}()
 
 	logger.Debugw("Deled room state", "room", roomKey, "nodeID", r.currentNode.Id)
 
@@ -800,17 +810,17 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 						logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
 
 						// Reconnect
-						if state == webrtc.ICEConnectionStateFailed {
-							logger.Infow("In-relay starting to reconnect", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-							// prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "success", "init_reconnect_request").Add(1)
-							// rel.StartReconnect(func(peerId string) error {
-							// 	_, err = roomCommunicator.SendMessage(fromPeerId, packReconnectRequest(peerId))
-							// 	if err != nil {
-							// 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "send_reconnect_request").Add(1)
-							// 	}
-							// 	return err
-							// })
-						}
+						// if state == webrtc.ICEConnectionStateFailed {
+						// 	logger.Infow("In-relay starting to reconnect", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+						// prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "success", "init_reconnect_request").Add(1)
+						// rel.StartReconnect(func(peerId string) error {
+						// 	_, err = roomCommunicator.SendMessage(fromPeerId, packReconnectRequest(peerId))
+						// 	if err != nil {
+						// 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "send_reconnect_request").Add(1)
+						// 	}
+						// 	return err
+						// })
+						// }
 					})
 
 					rel.OnMessage(func(id uint64, payload []byte) {
@@ -1373,19 +1383,6 @@ func getMessageType(message interface{}) string {
 type signalPeerMessage struct {
 	ReplyTo string `json:"replyTo"`
 	Signal  string `json:"signal"`
-}
-
-func (r *RoomManager) CloseLocalRelayConnections(roomKey livekit.RoomKey) {
-	currentOutRelayCollection := r.outRelayCollections[roomKey]
-	currentInRelayCollection := r.inRelayCollections[roomKey]
-	currentOutRelayCollection.ForEach(func(relay relay.Relay) {
-		rel := relay.(*pc.PcRelay)
-		currentOutRelayCollection.RemoveRelay(rel)
-	})
-	currentInRelayCollection.ForEach(func(relay relay.Relay) {
-		rel := relay.(*pc.PcRelay)
-		currentInRelayCollection.RemoveRelay(rel)
-	})
 }
 
 type reconnectRequestMsg struct {
