@@ -58,10 +58,4 @@ func (c *Collection) RemoveRelay(relay Relay) {
 			break
 		}
 	}
-	for i, f := range c.fs {
-		if f == nil {
-			c.fs = append(c.fs[:i], c.fs[i+1:]...)
-			break
-		}
-	}
 }
