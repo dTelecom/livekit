@@ -13,6 +13,8 @@ import (
 	"runtime/pprof"
 	"time"
 
+	"github.com/livekit/livekit-server/pkg/rtc/relay"
+	"github.com/livekit/livekit-server/pkg/rtc/relay/pc"
 	"github.com/pion/turn/v2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
@@ -112,12 +114,13 @@ func NewLivekitServer(conf *config.Config,
 	ingressServer := livekit.NewIngressServer(ingressService, twirpLoggingHook)
 
 	mux := http.NewServeMux()
-	if conf.Development {
-		// pprof handlers are registered onto DefaultServeMux
-		mux = http.DefaultServeMux
-		mux.HandleFunc("/debug/goroutine", s.debugGoroutines)
-		mux.HandleFunc("/debug/rooms", s.debugInfo)
-	}
+	// if conf.Development {
+	// pprof handlers are registered onto DefaultServeMux
+	mux = http.DefaultServeMux
+	mux.HandleFunc("/debug/goroutine", s.debugGoroutines)
+	mux.HandleFunc("/debug/rooms", s.debugInfo)
+	mux.HandleFunc("/debug/relays", s.debugInfoRelays)
+	// }
 	mux.Handle(roomServer.PathPrefix(), roomServer)
 	mux.Handle(egressServer.PathPrefix(), egressServer)
 	mux.Handle(ingressServer.PathPrefix(), ingressServer)
@@ -384,6 +387,38 @@ func (s *LivekitServer) debugInfo(w http.ResponseWriter, _ *http.Request) {
 	info := make([]map[string]interface{}, 0, len(s.roomManager.rooms))
 	for _, room := range s.roomManager.rooms {
 		info = append(info, room.DebugInfo())
+	}
+	s.roomManager.lock.RUnlock()
+
+	b, err := json.MarshalIndent(info, "", "\t")
+	if err != nil {
+		w.WriteHeader(400)
+		_, _ = w.Write([]byte(err.Error()))
+	} else {
+		_, _ = w.Write(b)
+	}
+}
+
+func (s *LivekitServer) debugInfoRelays(w http.ResponseWriter, _ *http.Request) {
+	s.roomManager.lock.RLock()
+	var info [][]map[string]interface{}
+	for _, collection := range s.roomManager.outRelayCollections {
+		var relayInfo []map[string]interface{}
+		collection.ForEach(func(relay relay.Relay) {
+			rel := relay.(*pc.PcRelay)
+			data := rel.DebugInfo()
+			relayInfo = append(relayInfo, data)
+		})
+		info = append(info, relayInfo)
+	}
+	for _, collection := range s.roomManager.inRelayCollections {
+		var relayInfo []map[string]interface{}
+		collection.ForEach(func(relay relay.Relay) {
+			rel := relay.(*pc.PcRelay)
+			data := rel.DebugInfo()
+			relayInfo = append(relayInfo, data)
+		})
+		info = append(info, relayInfo)
 	}
 	s.roomManager.lock.RUnlock()
 

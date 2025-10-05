@@ -166,10 +166,12 @@ func (r *RoomManager) DeleteRoom(ctx context.Context, roomKey livekit.RoomKey) e
 	go func() {
 		currentOutRelayCollection.ForEach(func(relay relay.Relay) {
 			rel := relay.(*pc.PcRelay)
+			logger.Debugw("Close deleted relay", "relay", relay)
 			rel.Close()
 		})
 		currentInRelayCollection.ForEach(func(relay relay.Relay) {
 			rel := relay.(*pc.PcRelay)
+			logger.Debugw("Close deleted relay", "relay", relay)
 			rel.Close()
 		})
 	}()
@@ -652,6 +654,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 		})
 
 		if rel != nil {
+			logger.Infow("Delete out relay", "peerId", peerId, "roomKey", roomKey, "relayID", rel.ID())
 			outRelayCollection.RemoveRelay(rel)
 		}
 
@@ -708,6 +711,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 				}
 			}
 
+			logger.Debugw("Add out relay", "peerId", peerId, "roomKey", roomKey, "relayID", rel.ID())
 			outRelayCollection.AddRelay(rel)
 		})
 
@@ -740,12 +744,14 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 			}
 			pendingAnswersMu.Unlock()
 		} else {
+			newRoom.Logger.Debugw("Received offer to create in relay", "roomID", newRoom.ID(), "roomName", newRoom.Name(), "fromPeerId", fromPeerId)
 			// Offer
 			var rel *pc.PcRelay
 			inRelayCollection.ForEach(func(relay relay.Relay) {
 				if relay.ID() == fromPeerId {
 					rel = relay.(*pc.PcRelay)
 					if rel.State() == pc.RelayStateClosed || rel.State() == pc.RelayStateClosing {
+						logger.Infow("Delete in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", rel.ID())
 						inRelayCollection.RemoveRelay(rel)
 						rel = nil
 					}
@@ -771,6 +777,7 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 					return
 				}
 
+				logger.Debugw("Add in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", rel.ID())
 				inRelayCollection.AddRelay(rel)
 
 				rel.OnReady(func() {

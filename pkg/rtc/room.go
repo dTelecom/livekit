@@ -1233,14 +1233,6 @@ func (r *Room) DebugInfo() map[string]interface{} {
 	}
 	info["Participants"] = participantInfo
 
-	// outRelaysInfo := make(map[string]interface{})
-	// i := 0
-	// r.outRelayCollection.ForEach(func(relay relay.Relay) {
-	// 	outRelaysInfo[strconv.Itoa(i)] = relay.DebugInfo()
-	// 	i++
-	// })
-	// info["OutRelays"] = outRelaysInfo
-
 	return info
 }
 
