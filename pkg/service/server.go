@@ -400,9 +400,7 @@ func (s *LivekitServer) debugInfo(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *LivekitServer) debugInfoRelays(w http.ResponseWriter, _ *http.Request) {
-	logger.Debugw("debug relay 1")
 	s.roomManager.lock.RLock()
-	logger.Debugw("debug relay 2")
 	var info [][]map[string]interface{}
 	for _, collection := range s.roomManager.outRelayCollections {
 		var relayInfo []map[string]interface{}
@@ -413,7 +411,6 @@ func (s *LivekitServer) debugInfoRelays(w http.ResponseWriter, _ *http.Request) 
 		})
 		info = append(info, relayInfo)
 	}
-	logger.Debugw("debug relay 3")
 	for _, collection := range s.roomManager.inRelayCollections {
 		var relayInfo []map[string]interface{}
 		collection.ForEach(func(relay relay.Relay) {
@@ -423,9 +420,7 @@ func (s *LivekitServer) debugInfoRelays(w http.ResponseWriter, _ *http.Request) 
 		})
 		info = append(info, relayInfo)
 	}
-	logger.Debugw("debug relay 4")
 	s.roomManager.lock.RUnlock()
-	logger.Debugw("debug relay 5")
 	b, err := json.MarshalIndent(info, "", "\t")
 	if err != nil {
 		w.WriteHeader(400)
