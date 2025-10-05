@@ -787,6 +787,9 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 
 			rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
 				logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+				if state == webrtc.ICEConnectionStateFailed {
+					r.RemoveRelayedParticipants(newRoom, fromPeerId)
+				}
 			})
 
 			rel.OnMessage(func(id uint64, payload []byte) {
@@ -1420,6 +1423,15 @@ func (r *RoomManager) MigrateAllParticipants() {
 				pi.IssueFullReconnect(types.ParticipantCloseReasonServiceRequestRemoveParticipant)
 				logger.Debugw("Migration message has been sent to participant", "identity", p.Identity(), "roomKey", room.Key(), "roomID", room.ID())
 			}
+		}
+	}
+}
+
+func (r *RoomManager) RemoveRelayedParticipants(room *rtc.Room, fromPeerId string) {
+	participants := room.GetRelayedParticipants()
+	for _, participant := range participants {
+		if participant.RelayID() == fromPeerId {
+			room.RemoveParticipant(participant.Identity(), participant.ID(), types.ParticipantCloseReasonStateDisconnected)
 		}
 	}
 }
