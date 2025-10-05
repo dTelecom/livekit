@@ -114,13 +114,13 @@ func NewLivekitServer(conf *config.Config,
 	ingressServer := livekit.NewIngressServer(ingressService, twirpLoggingHook)
 
 	mux := http.NewServeMux()
-	// if conf.Development {
-	// pprof handlers are registered onto DefaultServeMux
-	mux = http.DefaultServeMux
-	mux.HandleFunc("/debug/goroutine", s.debugGoroutines)
-	mux.HandleFunc("/debug/rooms", s.debugInfo)
-	mux.HandleFunc("/debug/relays", s.debugInfoRelays)
-	// }
+	if conf.Development {
+		// pprof handlers are registered onto DefaultServeMux
+		mux = http.DefaultServeMux
+		mux.HandleFunc("/debug/goroutine", s.debugGoroutines)
+		mux.HandleFunc("/debug/rooms", s.debugInfo)
+		mux.HandleFunc("/debug/relays", s.debugInfoRelays)
+	}
 	mux.Handle(roomServer.PathPrefix(), roomServer)
 	mux.Handle(egressServer.PathPrefix(), egressServer)
 	mux.Handle(ingressServer.PathPrefix(), ingressServer)
