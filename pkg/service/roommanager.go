@@ -648,15 +648,12 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 		var rel *pc.PcRelay
 		outRelayCollection.ForEach(func(rly relay.Relay) {
 			if rly.ID() == peerId {
-				rel = rly.(*pc.PcRelay)
-				newRoom.Logger.Debugw("Found existing out relay", "relayID", rel.ID(), "roomID", newRoom.ID(), "roomName", newRoom.Name(), "state", rel.State())
+				prev := rly.(*pc.PcRelay)
+				newRoom.Logger.Debugw("Found existing out relay", "relayID", prev.ID(), "roomID", newRoom.ID(), "roomName", newRoom.Name(), "state", prev.State())
+				logger.Infow("Delete out relay", "peerId", peerId, "roomKey", roomKey, "relayID", prev.ID())
+				outRelayCollection.RemoveRelay(prev)
 			}
 		})
-
-		if rel != nil {
-			logger.Infow("Delete out relay", "peerId", peerId, "roomKey", roomKey, "relayID", rel.ID())
-			outRelayCollection.RemoveRelay(rel)
-		}
 
 		logger.Infow("Out relay not found, creating new one", "peerId", peerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
 
@@ -749,97 +746,91 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 			var rel *pc.PcRelay
 			inRelayCollection.ForEach(func(relay relay.Relay) {
 				if relay.ID() == fromPeerId {
-					rel = relay.(*pc.PcRelay)
-					if rel.State() == pc.RelayStateClosed || rel.State() == pc.RelayStateClosing {
-						logger.Infow("Delete in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", rel.ID())
-						inRelayCollection.RemoveRelay(rel)
-						rel = nil
-					}
-					newRoom.Logger.Debugw("Found existing in relay", "relayID", rel.ID(), "roomID", newRoom.ID(), "roomName", newRoom.Name(), "state", rel.State())
+					prev := relay.(*pc.PcRelay)
+					logger.Infow("Delete in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", prev.ID())
+					inRelayCollection.RemoveRelay(prev)
 				}
 			})
 
-			if rel == nil {
-				logger.Infow("In-relay not found, creating new one", "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-				// Offer
-				rel, err = pc.NewRelay(newRoom.Logger, &relay.RelayConfig{
-					ID:            fromPeerId,
-					BufferFactory: newRoom.GetBufferFactory(),
-					SettingEngine: relayRtcConfig.SettingEngine,
-					ICEServers:    relayRtcConfig.Configuration.ICEServers,
-					RelayUDPMux:   relayRtcConfig.RelayUDPMux,
-					RelayUdpPort:  relayRtcConfig.RelayUdpPort,
-					Side:          "in",
-				})
-				if err != nil {
-					logger.Errorw("Failed to create in-relay", err, "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-					prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "create_in").Add(1)
+			logger.Infow("In-relay not found, creating new one", "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+			// Offer
+			rel, err = pc.NewRelay(newRoom.Logger, &relay.RelayConfig{
+				ID:            fromPeerId,
+				BufferFactory: newRoom.GetBufferFactory(),
+				SettingEngine: relayRtcConfig.SettingEngine,
+				ICEServers:    relayRtcConfig.Configuration.ICEServers,
+				RelayUDPMux:   relayRtcConfig.RelayUDPMux,
+				RelayUdpPort:  relayRtcConfig.RelayUdpPort,
+				Side:          "in",
+			})
+			if err != nil {
+				logger.Errorw("Failed to create in-relay", err, "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+				prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "create_in").Add(1)
+				return
+			}
+
+			logger.Debugw("Add in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", rel.ID())
+			inRelayCollection.AddRelay(rel)
+
+			rel.OnReady(func() {
+				logger.Infow("In-relay is ready", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+			})
+
+			rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
+				logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
+			})
+
+			rel.OnMessage(func(id uint64, payload []byte) {
+				logger.Debugw("Relay message received", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey)
+				var msg relayMessage
+
+				if err := json.Unmarshal(payload, &msg); err != nil {
+					newRoom.Logger.Errorw("Failed to unmarshal relay message", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomID", newRoom.ID())
+					prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "dc_receive_unmarshal_event").Add(1)
 					return
 				}
-
-				logger.Debugw("Add in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", rel.ID())
-				inRelayCollection.AddRelay(rel)
-
-				rel.OnReady(func() {
-					logger.Infow("In-relay is ready", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-				})
-
-				rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
-					logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-				})
-
-				rel.OnMessage(func(id uint64, payload []byte) {
-					logger.Debugw("Relay message received", "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey)
-					var msg relayMessage
-
-					if err := json.Unmarshal(payload, &msg); err != nil {
-						newRoom.Logger.Errorw("Failed to unmarshal relay message", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomID", newRoom.ID())
-						prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "dc_receive_unmarshal_event").Add(1)
+				if len(msg.Updates) > 0 {
+					for _, update := range msg.Updates {
+						r.onRelayParticipantUpdate(newRoom, rel, update)
+					}
+					for _, op := range newRoom.GetParticipants() {
+						if _, ok := op.(*rtc.RelayedParticipantImpl); ok {
+							continue
+						}
+						if err := op.SendParticipantUpdate(msg.Updates); err != nil {
+							newRoom.Logger.Errorw("Failed to send update to participant", err,
+								"participant", op.Identity(), "pID", op.ID(), "roomID", newRoom.ID())
+						}
+					}
+				}
+				if len(msg.DataPacket) > 0 {
+					dp := livekit.DataPacket{}
+					if err := proto.Unmarshal(msg.DataPacket, &dp); err != nil {
+						newRoom.Logger.Errorw("Failed to unmarshal relay data packet", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomID", newRoom.ID())
+						prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "unmarshal_data_packet").Add(1)
 						return
+					} else {
+						rtc.BroadcastDataPacketForRoom(newRoom, nil, &dp, newRoom.Logger)
 					}
-					if len(msg.Updates) > 0 {
-						for _, update := range msg.Updates {
-							r.onRelayParticipantUpdate(newRoom, rel, update)
-						}
-						for _, op := range newRoom.GetParticipants() {
-							if _, ok := op.(*rtc.RelayedParticipantImpl); ok {
-								continue
-							}
-							if err := op.SendParticipantUpdate(msg.Updates); err != nil {
-								newRoom.Logger.Errorw("Failed to send update to participant", err,
-									"participant", op.Identity(), "pID", op.ID(), "roomID", newRoom.ID())
-							}
-						}
-					}
-					if len(msg.DataPacket) > 0 {
-						dp := livekit.DataPacket{}
-						if err := proto.Unmarshal(msg.DataPacket, &dp); err != nil {
-							newRoom.Logger.Errorw("Failed to unmarshal relay data packet", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomID", newRoom.ID())
-							prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "unmarshal_data_packet").Add(1)
-							return
-						} else {
-							rtc.BroadcastDataPacketForRoom(newRoom, nil, &dp, newRoom.Logger)
-						}
-					}
-					if len(msg.Speakers) > 0 {
-						r.onRelaySpeakersChanged(newRoom, msg.Speakers)
-					}
-					if len(msg.ConnQualities) > 0 {
-						r.onRelayConnectionQualities(newRoom, msg.ConnQualities)
-					}
-				})
+				}
+				if len(msg.Speakers) > 0 {
+					r.onRelaySpeakersChanged(newRoom, msg.Speakers)
+				}
+				if len(msg.ConnQualities) > 0 {
+					r.onRelayConnectionQualities(newRoom, msg.ConnQualities)
+				}
+			})
 
-				rel.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta []byte) {
-					logger.Infow("Relay track published", "mid", mid, "rid", rid, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey)
-					var addTrackSignal relay.AddTrackSignal
-					if err := json.Unmarshal(meta, &addTrackSignal); err != nil {
-						newRoom.Logger.Errorw("Failed to unmarshal add track signal", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomID", newRoom.ID())
-						prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "unmarshal_add_track_signal").Add(1)
-						return
-					}
-					onRelayAddTrack(newRoom, track, receiver, mid, rid, addTrackSignal)
-				})
-			}
+			rel.OnTrack(func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, meta []byte) {
+				logger.Infow("Relay track published", "mid", mid, "rid", rid, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey)
+				var addTrackSignal relay.AddTrackSignal
+				if err := json.Unmarshal(meta, &addTrackSignal); err != nil {
+					newRoom.Logger.Errorw("Failed to unmarshal add track signal", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomID", newRoom.ID())
+					prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "unmarshal_add_track_signal").Add(1)
+					return
+				}
+				onRelayAddTrack(newRoom, track, receiver, mid, rid, addTrackSignal)
+			})
 
 			answer, answerErr := rel.Answer(signal)
 			if answerErr != nil {
