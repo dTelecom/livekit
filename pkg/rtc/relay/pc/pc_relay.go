@@ -115,6 +115,7 @@ var vp8RtxCodec = webrtc.RTPCodecParameters{
 
 type PcRelay struct {
 	id             string
+	createdAt      time.Time
 	side           string
 	pc             *webrtc.PeerConnection
 	rand           *rand.Rand
@@ -145,6 +146,7 @@ type PcRelay struct {
 func NewRelay(logger logger.Logger, conf *relay.RelayConfig) (*PcRelay, error) {
 	r := &PcRelay{
 		id:            conf.ID,
+		createdAt:     time.Now(),
 		side:          conf.Side,
 		bufferFactory: conf.BufferFactory,
 		logger:        logger,
@@ -544,6 +546,7 @@ func (r *PcRelay) SendMessageAndExpectReply(payload []byte) (<-chan []byte, erro
 func (r *PcRelay) DebugInfo() map[string]interface{} {
 	stats := map[string]interface{}{
 		"id":                 r.id,
+		"created":            r.createdAt.Unix(),
 		"side":               r.side,
 		"iceConnectionState": r.pc.ICEConnectionState().String(),
 		"connectionState":    r.pc.ConnectionState().String(),

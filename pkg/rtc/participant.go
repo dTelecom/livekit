@@ -2162,3 +2162,7 @@ func codecsFromMediaDescription(m *sdp.MediaDescription) (out []sdp.Codec, err e
 
 	return out, nil
 }
+
+func (p *ParticipantImpl) RelayID() string {
+	return ""
+}

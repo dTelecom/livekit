@@ -47,7 +47,9 @@ func (c *Collection) ForEach(f func(relay Relay)) {
 }
 
 func (c *Collection) RemoveRelay(relay Relay) {
-	relay.Close()
+	go func() {
+		relay.Close()
+	}()
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -55,12 +57,6 @@ func (c *Collection) RemoveRelay(relay Relay) {
 	for i, r := range c.relays {
 		if r.ID() == relay.ID() {
 			c.relays = append(c.relays[:i], c.relays[i+1:]...)
-			break
-		}
-	}
-	for i, f := range c.fs {
-		if f == nil {
-			c.fs = append(c.fs[:i], c.fs[i+1:]...)
 			break
 		}
 	}

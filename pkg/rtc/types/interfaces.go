@@ -335,6 +335,7 @@ type LocalParticipant interface {
 
 	UpdateSubscribedQuality(nodeID livekit.NodeID, trackID livekit.TrackID, maxQualities []SubscribedCodecQuality) error
 	UpdateMediaLoss(nodeID livekit.NodeID, trackID livekit.TrackID, fractionalLoss uint32) error
+	RelayID() string
 }
 
 // Room is a container of participants, and can provide room-level actions

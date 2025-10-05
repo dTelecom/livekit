@@ -196,6 +196,18 @@ func (r *Room) GetLocalParticipants() []types.LocalParticipant {
 	return participants
 }
 
+func (r *Room) GetRelayedParticipants() []types.LocalParticipant {
+	r.lock.RLock()
+	defer r.lock.RUnlock()
+	participants := make([]types.LocalParticipant, 0, len(r.participants))
+	for _, p := range r.participants {
+		if _, ok := p.(*RelayedParticipantImpl); ok {
+			participants = append(participants, p)
+		}
+	}
+	return participants
+}
+
 func (r *Room) GetActiveSpeakers() []*livekit.SpeakerInfo {
 	participants := r.GetParticipants()
 	speakers := make([]*livekit.SpeakerInfo, 0, len(participants))
@@ -1232,14 +1244,6 @@ func (r *Room) DebugInfo() map[string]interface{} {
 		participantInfo[string(p.Identity())] = p.DebugInfo()
 	}
 	info["Participants"] = participantInfo
-
-	// outRelaysInfo := make(map[string]interface{})
-	// i := 0
-	// r.outRelayCollection.ForEach(func(relay relay.Relay) {
-	// 	outRelaysInfo[strconv.Itoa(i)] = relay.DebugInfo()
-	// 	i++
-	// })
-	// info["OutRelays"] = outRelaysInfo
 
 	return info
 }
