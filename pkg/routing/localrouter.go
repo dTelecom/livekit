@@ -70,13 +70,18 @@ func (r *LocalRouter) SetNodeForRoom(_ context.Context, _ livekit.RoomKey, _ liv
 }
 
 func (r *LocalRouter) ClearRoomState(_ context.Context, roomKey livekit.RoomKey) error {
+	var rc *p2p.RouterCommunicatorImpl
 
-	routerCommunicator, exists := r.routerCommunicators[roomKey]
-	if exists {
+	r.lock.Lock()
+	if routerCommunicator, exists := r.routerCommunicators[roomKey]; exists {
 		delete(r.routerCommunicators, roomKey)
-		routerCommunicator.Close()
+		rc = routerCommunicator
 	}
+	r.lock.Unlock()
 
+	if rc != nil {
+		rc.Close()
+	}
 
 	return nil
 }
@@ -107,16 +112,17 @@ func (r *LocalRouter) ListNodes() ([]*livekit.Node, error) {
 }
 
 func (r *LocalRouter) StartParticipantSignal(ctx context.Context, roomKey livekit.RoomKey, pi ParticipantInit) (connectionID livekit.ConnectionID, reqSink MessageSink, resSource MessageSource, err error) {
-
+	r.lock.Lock()
 	if _, ok := r.routerCommunicators[roomKey]; !ok {
 		rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
 		if err == nil {
-			r.routerCommunicators[roomKey] = rc			
+			r.routerCommunicators[roomKey] = rc
 		} else {
 			rc.Close()
 			logger.Errorw("NewRouterCommunicatorImpl err", err)
 		}
 	}
+	r.lock.Unlock()
 
 	return r.StartParticipantSignalWithNodeID(ctx, roomKey, pi, livekit.NodeID(r.currentNode.Id))
 }
@@ -150,12 +156,43 @@ func (r *LocalRouter) writeFromP2P(ctx context.Context, roomKey livekit.RoomKey,
 	return r.WriteNodeRTC(ctx, r.currentNode.Id, msg)
 }
 
-func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) {
-	if routerCommunicator, ok := r.routerCommunicators[roomKey]; !ok {
-		logger.Errorw("writeToP2P err", fmt.Errorf("no routerCommunicator"))
-	} else {
-		routerCommunicator.Publish(msg)
+func (r *LocalRouter) ensureRouterCommunicator(roomKey livekit.RoomKey) {
+	r.lock.RLock()
+	_, ok := r.routerCommunicators[roomKey]
+	r.lock.RUnlock()
+
+	if ok {
+		return
 	}
+
+	rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
+	if err != nil {
+		rc.Close()
+		logger.Errorw("NewRouterCommunicatorImpl err", err)
+		return
+	}
+
+	r.lock.Lock()
+	r.routerCommunicators[roomKey] = rc
+	r.lock.Unlock()
+}
+
+func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) {
+	switch msg.Message.(type) {
+	case *livekit.RTCNodeMessage_DeleteRoom, *livekit.RTCNodeMessage_RemoveParticipant, *livekit.RTCNodeMessage_MuteTrack:
+		r.ensureRouterCommunicator(roomKey)
+	}
+
+	r.lock.RLock()
+	routerCommunicator := r.routerCommunicators[roomKey]
+	r.lock.RUnlock()
+
+	if routerCommunicator == nil {
+		logger.Errorw("writeToP2P err", fmt.Errorf("no routerCommunicator"))
+		return
+	}
+
+	routerCommunicator.Publish(msg)
 }
 
 func (r *LocalRouter) WriteRoomRTC(ctx context.Context, roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) error {
