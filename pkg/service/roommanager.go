@@ -1237,6 +1237,7 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 
 	if pi.State == livekit.ParticipantInfo_DISCONNECTED {
 		room.RemoveParticipant(participantIdentity, livekit.ParticipantID(pi.Sid), types.ParticipantCloseReasonStateDisconnected)
+		logger.Infow("Remote participant left", "identity", participantIdentity, "roomKey", room.Key(), "roomID", room.ID(), "sid", pi.Sid)
 	} else {
 		participant := room.GetParticipant(participantIdentity)
 		if _, ok := participant.(*rtc.RelayedParticipantImpl); ok {
