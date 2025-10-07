@@ -132,6 +132,8 @@ func (c *RoomCommunicatorImpl) checkPeer(peerId string) {
 			go peerHandler(peerId)
 		}
 		c.mu.Unlock()
+		roomMessagesTopic := formatRoomMessageTopic(c.key)
+		c.publishAd(roomMessagesTopic)
 	}
 }
 
