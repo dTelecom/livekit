@@ -1240,11 +1240,11 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 	} else {
 		participant := room.GetParticipant(participantIdentity)
 		if _, ok := participant.(*rtc.RelayedParticipantImpl); ok {
-			logger.Errorw("Another relayed participant is already joined", nil, "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(), "old sid", participant.ID(), "new sid", pi.Sid)
 			if participant.ID() != livekit.ParticipantID(pi.Sid) {
+				logger.Errorw("Another relayed participant is already joined", nil, "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(), "old sid", participant.ID(), "new sid", pi.Sid)
 				room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonStateDisconnected)
+				participant = nil
 			}
-			participant = nil
 		}
 		if participant == nil {
 			rtcConfig := room.Config
