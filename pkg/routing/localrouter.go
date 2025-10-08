@@ -70,15 +70,20 @@ func (r *LocalRouter) SetNodeForRoom(_ context.Context, _ livekit.RoomKey, _ liv
 }
 
 func (r *LocalRouter) ClearRoomState(_ context.Context, roomKey livekit.RoomKey) error {
+  var rc *p2p.RouterCommunicatorImpl
 
-	routerCommunicator, exists := r.routerCommunicators[roomKey]
-	if exists {
-		delete(r.routerCommunicators, roomKey)
-		routerCommunicator.Close()
-	}
+  r.lock.Lock()
+  if routerCommunicator, exists := r.routerCommunicators[roomKey]; exists {
+    rc = routerCommunicator
+    delete(r.routerCommunicators, roomKey)
+  }
+  r.lock.Unlock()
 
+  if rc != nil {
+    rc.Close()
+  }
 
-	return nil
+  return nil
 }
 
 func (r *LocalRouter) RegisterNode() error {
@@ -107,18 +112,23 @@ func (r *LocalRouter) ListNodes() ([]*livekit.Node, error) {
 }
 
 func (r *LocalRouter) StartParticipantSignal(ctx context.Context, roomKey livekit.RoomKey, pi ParticipantInit) (connectionID livekit.ConnectionID, reqSink MessageSink, resSource MessageSource, err error) {
+  r.lock.RLock()
+  _, ok := r.routerCommunicators[roomKey]
+  r.lock.RUnlock()
 
-	if _, ok := r.routerCommunicators[roomKey]; !ok {
-		rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
-		if err == nil {
-			r.routerCommunicators[roomKey] = rc			
-		} else {
-			rc.Close()
-			logger.Errorw("NewRouterCommunicatorImpl err", err)
-		}
-	}
+  if !ok {
+    rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
+    if err == nil {
+      r.lock.Lock()
+      r.routerCommunicators[roomKey] = rc
+      r.lock.Unlock()
+    } else {
+      rc.Close()
+      logger.Errorw("NewRouterCommunicatorImpl err", err)
+    }
+  }
 
-	return r.StartParticipantSignalWithNodeID(ctx, roomKey, pi, livekit.NodeID(r.currentNode.Id))
+  return r.StartParticipantSignalWithNodeID(ctx, roomKey, pi, livekit.NodeID(r.currentNode.Id))
 }
 
 func (r *LocalRouter) StartParticipantSignalWithNodeID(ctx context.Context, roomKey livekit.RoomKey, pi ParticipantInit, nodeID livekit.NodeID) (connectionID livekit.ConnectionID, reqSink MessageSink, resSource MessageSource, err error) {
