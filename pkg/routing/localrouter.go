@@ -169,7 +169,11 @@ func (r *LocalRouter) useRouterCommunicatorOnce(roomKey livekit.RoomKey, use fun
 }
 
 func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) {
-	if routerCommunicator, ok := r.routerCommunicators[roomKey]; !ok {
+	r.lock.RLock()
+	rc, ok := r.routerCommunicators[roomKey]
+	r.lock.RUnlock()
+
+	if !ok {
 		switch msg.Message.(type) {
 		case *livekit.RTCNodeMessage_DeleteRoom, *livekit.RTCNodeMessage_RemoveParticipant, *livekit.RTCNodeMessage_MuteTrack:
 			r.useRouterCommunicatorOnce(roomKey, func(c *p2p.RouterCommunicatorImpl) {
@@ -179,7 +183,7 @@ func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMe
 			logger.Errorw("writeToP2P err", fmt.Errorf("no routerCommunicator"))
 		}
 	} else {
-		routerCommunicator.Publish(msg)
+		rc.Publish(msg)
 	}
 }
 
