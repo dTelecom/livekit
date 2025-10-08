@@ -1237,16 +1237,20 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 	participant := room.GetParticipant(participantIdentity)
 
 	if pi.State == livekit.ParticipantInfo_DISCONNECTED {
-		if participant.ID() == livekit.ParticipantID(pi.Sid) {
-			room.RemoveParticipant(participantIdentity, livekit.ParticipantID(pi.Sid), types.ParticipantCloseReasonStateDisconnected)
-			logger.Infow("Remote participant left", "identity", participantIdentity, "roomKey", room.Key(), "roomID", room.ID(), "sid", pi.Sid)
+		if participant != nil {
+			if participant.ID() == livekit.ParticipantID(pi.Sid) {
+				room.RemoveParticipant(participantIdentity, livekit.ParticipantID(pi.Sid), types.ParticipantCloseReasonStateDisconnected)
+				logger.Infow("Remote participant left", "identity", participantIdentity, "roomKey", room.Key(), "roomID", room.ID(), "sid", pi.Sid)
+			}
 		}
 	} else {
-		if _, ok := participant.(*rtc.RelayedParticipantImpl); ok {
-			if participant.ID() != livekit.ParticipantID(pi.Sid) {
-				logger.Errorw("Another relayed participant is already joined", nil, "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(), "old sid", participant.ID(), "new sid", pi.Sid)
-				room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonStateDisconnected)
-				participant = nil
+		if participant != nil {
+			if _, ok := participant.(*rtc.RelayedParticipantImpl); ok {
+				if participant.ID() != livekit.ParticipantID(pi.Sid) {
+					logger.Errorw("Another relayed participant is already joined", nil, "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(), "old sid", participant.ID(), "new sid", pi.Sid)
+					room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonStateDisconnected)
+					participant = nil
+				}
 			}
 		}
 		if participant == nil {
