@@ -43,7 +43,7 @@ type LocalRouter struct {
 	onRTCMessage     RTCMessageCallback
 
 	db                  *pubsub.DB
-	routerCommunicators map[livekit.RoomKey]*p2p.RouterCommunicatorImpl
+	routerCommunicators sync.Map // map[livekit.RoomKey]*p2p.RouterCommunicatorImpl
 }
 
 func NewLocalRouter(currentNode LocalNode, signalClient SignalClient, db *pubsub.DB) *LocalRouter {
@@ -54,7 +54,7 @@ func NewLocalRouter(currentNode LocalNode, signalClient SignalClient, db *pubsub
 		requestChannels:     make(map[string]*MessageChannel),
 		responseChannels:    make(map[string]*MessageChannel),
 		rtcMessageChan:      NewMessageChannel(localRTCChannelSize),
-		routerCommunicators: make(map[livekit.RoomKey]*p2p.RouterCommunicatorImpl),
+		routerCommunicators: sync.Map{},
 	}
 }
 
@@ -70,13 +70,11 @@ func (r *LocalRouter) SetNodeForRoom(_ context.Context, _ livekit.RoomKey, _ liv
 }
 
 func (r *LocalRouter) ClearRoomState(_ context.Context, roomKey livekit.RoomKey) error {
-
-	routerCommunicator, exists := r.routerCommunicators[roomKey]
-	if exists {
-		delete(r.routerCommunicators, roomKey)
-		routerCommunicator.Close()
+	if v, ok := r.routerCommunicators.LoadAndDelete(roomKey); ok {
+		if rc, _ := v.(*p2p.RouterCommunicatorImpl); rc != nil {
+			rc.Close()
+		}
 	}
-
 	return nil
 }
 
@@ -106,14 +104,15 @@ func (r *LocalRouter) ListNodes() ([]*livekit.Node, error) {
 }
 
 func (r *LocalRouter) StartParticipantSignal(ctx context.Context, roomKey livekit.RoomKey, pi ParticipantInit) (connectionID livekit.ConnectionID, reqSink MessageSink, resSource MessageSource, err error) {
-
-	if _, ok := r.routerCommunicators[roomKey]; !ok {
+	if _, ok := r.routerCommunicators.Load(roomKey); !ok {
 		rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
-		if err == nil {
-			r.routerCommunicators[roomKey] = rc
-		} else {
+		if err != nil {
 			rc.Close()
-			logger.Errorw("NewRouterCommunicatorImpl err", err)
+			logger.Errorw("NewRouterCommunicatorImpl err", err, "roomKey", roomKey)
+		} else {
+			if _, loaded := r.routerCommunicators.LoadOrStore(roomKey, rc); loaded {
+				rc.Close()
+			}
 		}
 	}
 
@@ -149,41 +148,13 @@ func (r *LocalRouter) writeFromP2P(ctx context.Context, roomKey livekit.RoomKey,
 	return r.WriteNodeRTC(ctx, r.currentNode.Id, msg)
 }
 
-func (r *LocalRouter) useRouterCommunicatorOnce(roomKey livekit.RoomKey, use func(c *p2p.RouterCommunicatorImpl)) {
-	r.lock.RLock()
-	c := r.routerCommunicators[roomKey]
-	r.lock.RUnlock()
-	if c != nil {
-		use(c)
-		return
-	}
-
-	rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
-	if err != nil {
-		logger.Errorw("NewRouterCommunicatorImpl err", err, "roomKey", roomKey)
-		return
-	}
-	defer rc.Close()
-
-	use(rc)
-}
-
 func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) {
-	r.lock.RLock()
-	rc, ok := r.routerCommunicators[roomKey]
-	r.lock.RUnlock()
-
-	if !ok {
-		switch msg.Message.(type) {
-		case *livekit.RTCNodeMessage_DeleteRoom, *livekit.RTCNodeMessage_RemoveParticipant, *livekit.RTCNodeMessage_MuteTrack:
-			r.useRouterCommunicatorOnce(roomKey, func(c *p2p.RouterCommunicatorImpl) {
-				c.Publish(msg)
-			})
-		default:
-			logger.Errorw("writeToP2P err", fmt.Errorf("no routerCommunicator"))
-		}
+	if v, ok := r.routerCommunicators.Load(roomKey); !ok {
+		logger.Errorw("writeToP2P err", fmt.Errorf("no routerCommunicator"))
 	} else {
-		rc.Publish(msg)
+		if rc, _ := v.(*p2p.RouterCommunicatorImpl); rc != nil {
+			rc.Publish(msg)
+		}
 	}
 }
 
