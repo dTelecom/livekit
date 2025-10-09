@@ -2,7 +2,6 @@ package routing
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
