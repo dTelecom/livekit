@@ -336,7 +336,7 @@ func (r *PcRelay) Offer(signalFn func(offerData []byte) ([]byte, error)) error {
 
 	select {
 	case <-doneCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(3 * time.Second):
 		r.logger.Warnw("Timeout waiting for ICE candidates", nil, "candidatesCount", len(iceCandidates), "relayID", r.id, "side", r.side)
 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "timeout_wait_ice_candidates").Add(1)
 	}
@@ -423,7 +423,7 @@ func (r *PcRelay) Answer(offerData []byte) ([]byte, error) {
 
 	select {
 	case <-doneCh:
-	case <-time.After(5 * time.Second):
+	case <-time.After(3 * time.Second):
 		r.logger.Warnw("Timeout waiting for ICE candidates", nil, "candidatesCount", len(iceCandidates), "relayID", r.id, "side", r.side)
 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "timeout_wait_ice_candidates").Add(1)
 	}
