@@ -2,7 +2,6 @@ package routing
 
 import (
 	"context"
-	"fmt"
 	"sync"
 	"time"
 
@@ -148,9 +147,29 @@ func (r *LocalRouter) writeFromP2P(ctx context.Context, roomKey livekit.RoomKey,
 	return r.WriteNodeRTC(ctx, r.currentNode.Id, msg)
 }
 
+func (r *LocalRouter) useRouterCommunicatorOnce(roomKey livekit.RoomKey, use func(c *p2p.RouterCommunicatorImpl)) {
+	if v, ok := r.routerCommunicators.Load(roomKey); ok {
+		if c, _ := v.(*p2p.RouterCommunicatorImpl); c != nil {
+			use(c)
+			return
+		}
+	}
+
+	rc, err := p2p.NewRouterCommunicatorImpl(roomKey, r.db, r.writeFromP2P)
+	defer rc.Close()
+	if err != nil {
+		logger.Errorw("NewRouterCommunicatorImpl err", err, "roomKey", roomKey)
+		return
+	}
+	
+	use(rc)
+}
+
 func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) {
 	if v, ok := r.routerCommunicators.Load(roomKey); !ok {
-		logger.Errorw("writeToP2P err", fmt.Errorf("no routerCommunicator"))
+		r.useRouterCommunicatorOnce(roomKey, func(c *p2p.RouterCommunicatorImpl) {
+			c.Publish(msg)
+		})
 	} else {
 		if rc, _ := v.(*p2p.RouterCommunicatorImpl); rc != nil {
 			rc.Publish(msg)
