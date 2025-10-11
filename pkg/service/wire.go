@@ -97,6 +97,7 @@ func CreateP2PPubSub(conf *config.Config, bootNodeProvider *BootNodeProvider) (*
 			QUIC: conf.P2P.PeerListenPort,
 			TCP:  conf.P2P.PeerListenPort,
 		},
+		Debug: false,
 	}
 
 	db, err := pubsub.Connect(context.Background(), p2pConf)

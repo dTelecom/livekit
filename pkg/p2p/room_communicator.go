@@ -196,7 +196,7 @@ func (c *RoomCommunicatorImpl) ForEachPeer(peerHandler func(peerId string)) {
 
 	c.peerHandlers = append(c.peerHandlers, peerHandler)
 	for peer := range c.peers {
-		peerHandler(peer)
+		go peerHandler(peer)
 	}
 }
 
