@@ -3,11 +3,14 @@ package service
 import (
 	"context"
 	"reflect"
+	"strconv"
 	"time"
 
 	"github.com/thoas/go-funk"
+	"github.com/twitchtv/twirp"
 
 	"github.com/livekit/protocol/livekit"
+	"github.com/livekit/protocol/logger"
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
@@ -93,7 +96,6 @@ func (s *RoomService) RemoveParticipant(ctx context.Context, req *livekit.RoomPa
 		return nil, err
 	}
 
-	
 	_, _, _, err = s.roomStore.LoadRoom(ctx, roomKey, false)
 	if err != nil {
 		// no room on current node
@@ -354,4 +356,83 @@ func (s *RoomService) SendData(ctx context.Context, req *livekit.SendDataRequest
 		return nil, err
 	}
 	return &livekit.SendDataResponse{}, nil
+}
+
+func (s *RoomService) ListRooms(ctx context.Context, req *livekit.ListRoomsRequest) (*livekit.ListRoomsResponse, error) {
+	AppendLogFields(ctx, "room", req.Names)
+	err := EnsureListPermission(ctx)
+	if err != nil {
+		return nil, twirpAuthError(err)
+	}
+
+	apiKey := GetApiKey(ctx)
+	var keys []livekit.RoomKey = make([]livekit.RoomKey, 0, len(req.Names))
+	for i := range req.Names {
+		keys = append(keys, utils.RoomKey(livekit.RoomName(req.Names[i]), apiKey))
+	}
+
+	rooms, err := s.roomStore.ListRooms(ctx, keys)
+	if err != nil {
+		return nil, err
+	}
+
+	res := &livekit.ListRoomsResponse{
+		Rooms: rooms,
+	}
+
+	return res, nil
+}
+
+func (s *RoomService) UpdateRoomMetadata(ctx context.Context, req *livekit.UpdateRoomMetadataRequest) (*livekit.Room, error) {
+	apiKey := GetApiKey(ctx)
+	roomKey := utils.RoomKey(livekit.RoomName(req.Room), apiKey)
+
+	AppendLogFields(ctx, "room", req.Room, "size", len(req.Metadata))
+	maxMetadataSize := int(s.roomConf.MaxMetadataSize)
+	if maxMetadataSize > 0 && len(req.Metadata) > maxMetadataSize {
+		return nil, twirp.InvalidArgumentError(ErrMetadataExceedsLimits.Error(), strconv.Itoa(maxMetadataSize))
+	}
+
+	if err := EnsureAdminPermission(ctx, livekit.RoomName(req.Room)); err != nil {
+		return nil, twirpAuthError(err)
+	}
+
+	err := s.router.WriteRoomRTC(ctx, roomKey, &livekit.RTCNodeMessage{
+		Message: &livekit.RTCNodeMessage_UpdateRoomMetadata{
+			UpdateRoomMetadata: req,
+		},
+	})
+	if err != nil {
+		logger.Errorw("Error writing room metadata", err, "roomKey", roomKey)
+		return nil, err
+	}
+
+	room, _, _, err := s.roomStore.LoadRoom(ctx, roomKey, false)
+	if err != nil {
+		logger.Errorw("Error loading room", err)
+		// no room on current node
+		if err == ErrRoomNotFound {
+			return &livekit.Room{}, nil
+		}
+		return nil, err
+	}
+
+	err = s.confirmExecution(func() error {
+		room, _, _, err = s.roomStore.LoadRoom(ctx, roomKey, false)
+		if err != nil {
+			logger.Errorw("Error loading room", err)
+			return ErrRoomNotFound
+		}
+
+		if room.Metadata != req.Metadata {
+			return ErrOperationFailed
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &livekit.Room{}, nil
 }
