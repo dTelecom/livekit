@@ -348,8 +348,7 @@ func (s *LivekitServer) Stop(force bool) {
 	<-s.closedChan
 }
 
-func (s *LivekitServer) StopAndMigrate() {
-	// wait for all participants to exit
+func (s *LivekitServer) StopAndWaitForParticipantsToMigrate() {
 	s.router.Drain()
 
 	s.roomManager.MigrateAllParticipants()
