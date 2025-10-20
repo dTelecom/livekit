@@ -259,8 +259,7 @@ func startServer(c *cli.Context) error {
 		sig := <-sigChan
 		logger.Infow("exit requested, shutting down", "signal", sig)
 
-		// will wait for all participants to exit
-		server.StopAndMigrate()
+		server.StopAndWaitForParticipantsToMigrate()
 	}()
 
 	return server.Start()
