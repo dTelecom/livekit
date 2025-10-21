@@ -113,6 +113,79 @@ var vp8RtxCodec = webrtc.RTPCodecParameters{
 	PayloadType: 97,
 }
 
+// H264 codecs - matching main media engine configuration
+var h264Codec1 = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:    webrtc.MimeTypeH264,
+		ClockRate:   90000,
+		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+		RTCPFeedback: []webrtc.RTCPFeedback{
+			{Type: "nack", Parameter: ""},
+			{Type: "nack", Parameter: "pli"},
+		},
+	},
+	PayloadType: 125,
+}
+
+var h264RtxCodec1 = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:     "video/rtx",
+		ClockRate:    90000,
+		Channels:     0,
+		SDPFmtpLine:  fmt.Sprintf("apt=%v", h264Codec1.PayloadType),
+		RTCPFeedback: nil,
+	},
+	PayloadType: 126,
+}
+
+var h264Codec2 = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:    webrtc.MimeTypeH264,
+		ClockRate:   90000,
+		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f",
+		RTCPFeedback: []webrtc.RTCPFeedback{
+			{Type: "nack", Parameter: ""},
+			{Type: "nack", Parameter: "pli"},
+		},
+	},
+	PayloadType: 108,
+}
+
+var h264RtxCodec2 = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:     "video/rtx",
+		ClockRate:    90000,
+		Channels:     0,
+		SDPFmtpLine:  fmt.Sprintf("apt=%v", h264Codec2.PayloadType),
+		RTCPFeedback: nil,
+	},
+	PayloadType: 109,
+}
+
+var h264Codec3 = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:    webrtc.MimeTypeH264,
+		ClockRate:   90000,
+		SDPFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032",
+		RTCPFeedback: []webrtc.RTCPFeedback{
+			{Type: "nack", Parameter: ""},
+			{Type: "nack", Parameter: "pli"},
+		},
+	},
+	PayloadType: 123,
+}
+
+var h264RtxCodec3 = webrtc.RTPCodecParameters{
+	RTPCodecCapability: webrtc.RTPCodecCapability{
+		MimeType:     "video/rtx",
+		ClockRate:    90000,
+		Channels:     0,
+		SDPFmtpLine:  fmt.Sprintf("apt=%v", h264Codec3.PayloadType),
+		RTCPFeedback: nil,
+	},
+	PayloadType: 124,
+}
+
 type PcRelay struct {
 	id             string
 	createdAt      time.Time
@@ -174,16 +247,39 @@ func (r *PcRelay) createPeerConnection(conf *relay.RelayConfig) (*webrtc.PeerCon
 	conf.SettingEngine.BufferFactory = conf.BufferFactory.GetOrNew
 
 	me := &webrtc.MediaEngine{}
+	// Register audio codecs
 	if err := me.RegisterCodec(opusCodec, webrtc.RTPCodecTypeAudio); err != nil {
 		return nil, fmt.Errorf("RegisterCodec error: %w", err)
 	}
 	if err := me.RegisterCodec(redCodec, webrtc.RTPCodecTypeAudio); err != nil {
 		return nil, fmt.Errorf("RegisterCodec error: %w", err)
 	}
+
+	// Register VP8 video codec and RTX
 	if err := me.RegisterCodec(vp8Codec, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("RegisterCodec error: %w", err)
 	}
 	if err := me.RegisterCodec(vp8RtxCodec, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+
+	// Register H264 video codecs and RTX
+	if err := me.RegisterCodec(h264Codec1, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+	if err := me.RegisterCodec(h264RtxCodec1, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+	if err := me.RegisterCodec(h264Codec2, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+	if err := me.RegisterCodec(h264RtxCodec2, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+	if err := me.RegisterCodec(h264Codec3, webrtc.RTPCodecTypeVideo); err != nil {
+		return nil, fmt.Errorf("RegisterCodec error: %w", err)
+	}
+	if err := me.RegisterCodec(h264RtxCodec3, webrtc.RTPCodecTypeVideo); err != nil {
 		return nil, fmt.Errorf("RegisterCodec error: %w", err)
 	}
 	if conf.RelayUdpPort != 0 {
