@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/acme/autocert"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"runtime/pprof"
+	"golang.org/x/crypto/acme/autocert"
 	"time"
 
 	"github.com/livekit/livekit-server/pkg/rtc/relay"
@@ -39,6 +39,7 @@ type LivekitServer struct {
 	httpServer     *http.Server
 	httpsServer    *http.Server
 	promServer     *http.Server
+	whipHandler    *WhipHandler
 	router         routing.Router
 	roomManager    *RoomManager
 	signalServer   *SignalServer
@@ -50,12 +51,14 @@ type LivekitServer struct {
 	doneChan       chan struct{}
 	closedChan     chan struct{}
 	TLSMuxer       *vhost.TLSMuxer
+	roomAllocator  RoomAllocator
 }
 
 func NewLivekitServer(conf *config.Config,
 	roomService livekit.RoomService,
 	egressService *EgressService,
 	ingressService *IngressService,
+	roomAllocator RoomAllocator,
 	rtcService *RTCService,
 	keyProvider auth.KeyProviderPublicKey,
 	router routing.Router,
@@ -76,6 +79,7 @@ func NewLivekitServer(conf *config.Config,
 		router:       router,
 		roomManager:  roomManager,
 		signalServer: signalServer,
+		roomAllocator: roomAllocator,
 		// turn server starts automatically
 		turnServer:     turnServer,
 		currentNode:    currentNode,
@@ -84,6 +88,9 @@ func NewLivekitServer(conf *config.Config,
 		closedChan:     make(chan struct{}),
 		TLSMuxer:       TLSMuxer,
 	}
+
+	whipHandler := NewWhipHandler(clientProvider, conf)
+	s.whipHandler = whipHandler
 
 	middlewares := []negroni.Handler{
 		// always first
@@ -133,6 +140,7 @@ func NewLivekitServer(conf *config.Config,
 	mux.HandleFunc("/peer-debug", mainDebugHandler.peerHTTPHandler)
 	mux.HandleFunc("/traffic-debug", mainDebugHandler.trafficHTTPHandler)
 	mux.HandleFunc("/", s.defaultHandler)
+	mux.HandleFunc("/whip", s.whipHandler.HandleWhipRequest)
 
 	if conf.Domain != "" {
 		s.httpsServer = &http.Server{

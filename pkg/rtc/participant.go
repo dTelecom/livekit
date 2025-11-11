@@ -1758,9 +1758,9 @@ func (p *ParticipantImpl) addMediaTrack(signalCid string, sdpCid string, ti *liv
 		}
 	}
 
-	p.pendingTracks[signalCid].trackInfos = p.pendingTracks[signalCid].trackInfos[1:]
-	if len(p.pendingTracks[signalCid].trackInfos) == 0 {
-		delete(p.pendingTracks, signalCid)
+		p.pendingTracks[signalCid].trackInfos = p.pendingTracks[signalCid].trackInfos[1:]
+		if len(p.pendingTracks[signalCid].trackInfos) == 0 {
+			delete(p.pendingTracks, signalCid)
 	}
 
 	trackID := livekit.TrackID(ti.Sid)
