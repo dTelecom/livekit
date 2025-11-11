@@ -2,11 +2,9 @@ package service
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/telemetry"
-	"github.com/livekit/protocol/ingress"
 	"github.com/livekit/protocol/livekit"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/rpc"
@@ -57,18 +55,7 @@ func (s *IngressService) CreateIngress(ctx context.Context, req *livekit.CreateI
 		AppendLogFields(ctx, fields...)
 	}()
 
-	var url string
-	switch req.InputType {
-	case livekit.IngressInput_RTMP_INPUT:
-		url = s.conf.RTMPBaseURL
-	case livekit.IngressInput_WHIP_INPUT:
-		url = s.conf.WHIPBaseURL
-	default:
-		return nil, fmt.Errorf("invalid ingress type: %s", req.InputType)//ingress.ErrInvalidIngressType
-	}
-
-
-	ig, err := s.CreateIngressWithUrlPrefix(ctx, url, req)
+	ig, err := s.CreateIngressWithUrlPrefix(ctx, s.conf.RTMPBaseURL, req)
 	if err != nil {
 		return nil, err
 	}
@@ -99,21 +86,9 @@ func (s *IngressService) CreateIngressWithUrlPrefix(ctx context.Context, urlPref
 		RoomName:            req.RoomName,
 		ParticipantIdentity: req.ParticipantIdentity,
 		ParticipantName:     req.ParticipantName,
-		//Reusable:            req.InputType == livekit.IngressInput_RTMP_INPUT,
+		Reusable:            req.InputType == livekit.IngressInput_RTMP_INPUT,
 		State:               &livekit.IngressState{},
 	}
-
-	switch req.InputType {
-	case livekit.IngressInput_RTMP_INPUT,
-		livekit.IngressInput_WHIP_INPUT:
-		info.Reusable = true
-		if err := ingress.ValidateForSerialization(info); err != nil {
-			return nil, err
-		}
-	default:
-		return nil, ingress.ErrInvalidIngressType
-	}
-
 
 	if err = s.store.StoreIngress(ctx, info); err != nil {
 		logger.Errorw("could not write ingress info", err)
