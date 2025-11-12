@@ -227,11 +227,6 @@ func (p *LiveKitSDKPublisher) startUser(wsURL string, token string, user string,
 	roomCh <- room
 	close(roomCh)
 
-	ptct := room.GetParticipants()
-	for _, participant := range ptct {
-		fmt.Printf("%s | Participant: %s\n", user, participant.Identity())
-	}
-
 	for _, participant := range room.GetParticipants() {
 		for _, pub := range participant.Tracks() {
 			if remotePub, ok := pub.(*lksdk.RemoteTrackPublication); ok {
