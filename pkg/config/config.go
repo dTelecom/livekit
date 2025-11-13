@@ -521,6 +521,7 @@ func NewConfig(confString string, strictMode bool, c *cli.Context, baseFlags []c
 		conf.Environment = "dev"
 	}
 
+
 	return conf, nil
 }
 
