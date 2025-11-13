@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"reflect"
-	"strconv"
 	"strings"
 	"time"
 
@@ -117,7 +116,6 @@ type RTCConfig struct {
 	UseMDNS                 bool             `yaml:"use_mdns"`
 	StrictACKs              bool             `yaml:"strict_acks"`
 	Relay                   RelayConfig      `yaml:"relay,omitempty"`
-	WhipWsURL               string           `yaml:"whip_ws_url,omitempty"`
 
 	// Number of packets to buffer for NACK
 	PacketBufferSize int `yaml:"packet_buffer_size,omitempty"`
@@ -523,9 +521,6 @@ func NewConfig(confString string, strictMode bool, c *cli.Context, baseFlags []c
 		conf.Environment = "dev"
 	}
 
-	if conf.RTC.WhipWsURL == "" {
-		conf.RTC.WhipWsURL = "ws://localhost:" + strconv.Itoa(int(conf.Port))
-	}
 
 	return conf, nil
 }

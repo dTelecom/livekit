@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -75,15 +76,22 @@ func (sm *SessionManager) GetSession(sessionID string) (*whipSession, bool) {
 type WhipHandler struct {
 	clientProvider *ClientProvider
 	sessionManager *SessionManager
-	conf           *config.Config
+	wsURL          string
 }
 
 func NewWhipHandler(clientProvider *ClientProvider, conf *config.Config) *WhipHandler {
+	wsURL := ""
+	if conf.Domain != "" {
+		wsURL = "wss://" + conf.Domain
+	} else {
+		wsURL = "ws://localhost:" + strconv.Itoa(int(conf.Port))
+	}
+
 	sessionManager := NewSessionManager()
 	return &WhipHandler{
 		clientProvider: clientProvider,
 		sessionManager: sessionManager,
-		conf:           conf,
+		wsURL:          wsURL,
 	}
 }
 
@@ -203,11 +211,7 @@ func (s *WhipHandler) createSession(res http.ResponseWriter, offer string, token
 		return fmt.Errorf("failed to add transceiver for audio: %w", err)
 	}
 
-	if s.conf.RTC.WhipWsURL == "" {
-		return fmt.Errorf("whip ws url is required")
-	}
-
-	publisher, err := StartLiveKitSDKPublisher(s.conf.RTC.WhipWsURL, token, user)
+	publisher, err := StartLiveKitSDKPublisher(s.wsURL, token, user)
 	if err != nil {
 		return fmt.Errorf("failed to start livekit sdk publisher: %w", err)
 	}
