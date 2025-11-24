@@ -2,8 +2,13 @@ package service
 
 import (
 	"context"
+
 	"fmt"
+
 	"reflect"
+	"slices"
+	"sync"
+	"time"
 
 	"github.com/twitchtv/twirp"
 
@@ -18,11 +23,68 @@ import (
 	"github.com/livekit/livekit-server/pkg/telemetry"
 )
 
+type EgressProcessStore struct {
+	mu        sync.Mutex
+	processes map[string]*livekit.EgressInfo
+}
+
+func NewEgressProcessStore() *EgressProcessStore {
+	eps := &EgressProcessStore{
+		processes: make(map[string]*livekit.EgressInfo),
+	}
+
+	go eps.clean()
+
+	return eps
+}
+
+func (s *EgressProcessStore) StoreEgress(info *livekit.EgressInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processes[info.EgressId] = info
+}
+
+func (s *EgressProcessStore) LoadEgress(egressID string) (*livekit.EgressInfo, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	info, ok := s.processes[egressID]
+	return info, ok
+}
+
+func (s *EgressProcessStore) UpdateEgress(info *livekit.EgressInfo) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.processes[info.EgressId] = info
+}
+
+func (s *EgressProcessStore) DeleteEgress(egressID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.processes, egressID)
+}
+
+func (s *EgressProcessStore) clean() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		s.mu.Lock()
+		completeStatuses := []livekit.EgressStatus{livekit.EgressStatus_EGRESS_COMPLETE, livekit.EgressStatus_EGRESS_FAILED, livekit.EgressStatus_EGRESS_ABORTED, livekit.EgressStatus_EGRESS_LIMIT_REACHED}
+		for egressID, info := range s.processes {
+			if slices.Contains(completeStatuses, info.Status) {
+				delete(s.processes, egressID)
+			}
+		}
+		s.mu.Unlock()
+	}
+}
+
 type EgressService struct {
 	psrpcClient      rpc.EgressClient
 	clientDeprecated egress.RPCClient
 	store            ServiceStore
 	es               EgressStore
+	eps              *EgressProcessStore
 	roomService      livekit.RoomService
 	telemetry        telemetry.TelemetryService
 	launcher         rtc.EgressLauncher
@@ -33,12 +95,14 @@ type egressLauncher struct {
 	clientDeprecated egress.RPCClient
 	es               EgressStore
 	telemetry        telemetry.TelemetryService
+	eps              *EgressProcessStore
 }
 
 func NewEgressLauncher(
 	psrpcClient rpc.EgressClient,
 	clientDeprecated egress.RPCClient,
 	es EgressStore,
+	eps *EgressProcessStore,
 	ts telemetry.TelemetryService) rtc.EgressLauncher {
 	if psrpcClient == nil && clientDeprecated == nil {
 		return nil
@@ -48,6 +112,7 @@ func NewEgressLauncher(
 		psrpcClient:      psrpcClient,
 		clientDeprecated: clientDeprecated,
 		es:               es,
+		eps:              eps,
 		telemetry:        ts,
 	}
 }
@@ -60,12 +125,14 @@ func NewEgressService(
 	rs livekit.RoomService,
 	ts telemetry.TelemetryService,
 	launcher rtc.EgressLauncher,
+	eps *EgressProcessStore,
 ) *EgressService {
 	return &EgressService{
 		psrpcClient:      psrpcClient,
 		clientDeprecated: clientDeprecated,
 		store:            store,
 		es:               es,
+		eps:              eps,
 		roomService:      rs,
 		telemetry:        ts,
 		launcher:         launcher,
@@ -98,6 +165,8 @@ func (s *EgressService) StartRoomCompositeEgress(ctx context.Context, req *livek
 func (s *EgressService) StartTrackCompositeEgress(ctx context.Context, req *livekit.TrackCompositeEgressRequest) (*livekit.EgressInfo, error) {
 	apiKey := GetApiKey(ctx)
 	roomKey := lkutils.RoomKey(livekit.RoomName(req.RoomName), apiKey)
+
+	logger.Infow("Starting track composite egress", "room", roomKey, "audioTrackID", req.AudioTrackId, "videoTrackID", req.VideoTrackId)
 
 	fields := []interface{}{
 		"room", roomKey, "audioTrackID", req.AudioTrackId, "videoTrackID", req.VideoTrackId,
@@ -164,20 +233,24 @@ func (s *EgressService) StartWebEgress(ctx context.Context, req *livekit.WebEgre
 }
 
 func (s *EgressService) startEgress(ctx context.Context, roomKey livekit.RoomKey, req *rpc.StartEgressRequest) (*livekit.EgressInfo, error) {
-	if err := EnsureRecordPermission(ctx); err != nil {
-		return nil, twirpAuthError(err)
-	} else if s.launcher == nil {
+	logger.Infow("Starting egress", "room", roomKey, "request", req)
+	// if err := EnsureRecordPermission(ctx); err != nil {
+	// 	return nil, twirpAuthError(err)
+	// } else
+	if s.launcher == nil {
 		return nil, ErrEgressNotConnected
 	}
 
 	if roomKey != "" {
 		room, _, _, err := s.store.LoadRoom(ctx, roomKey, false)
 		if err != nil {
+			logger.Errorw("Error loading room", err)
 			return nil, err
 		}
 		req.RoomId = room.Sid
 	}
 
+	logger.Infow("Starting egress with launcher", "launcher", s.launcher)
 	return s.launcher.StartEgress(ctx, req)
 }
 
@@ -185,6 +258,7 @@ func (s *egressLauncher) StartEgress(ctx context.Context, req *rpc.StartEgressRe
 	return s.StartEgressWithClusterId(ctx, "", req)
 }
 func (s *egressLauncher) StartEgressWithClusterId(ctx context.Context, clusterId string, req *rpc.StartEgressRequest) (*livekit.EgressInfo, error) {
+	logger.Infow("Starting egress with cluster id", "clusterId", clusterId)
 	var info *livekit.EgressInfo
 	var err error
 
@@ -192,6 +266,7 @@ func (s *egressLauncher) StartEgressWithClusterId(ctx context.Context, clusterId
 	if req.EgressId == "" {
 		req.EgressId = utils.NewGuid(utils.EgressPrefix)
 	}
+	
 
 	if s.psrpcClient != nil {
 		info, err = s.psrpcClient.StartEgress(ctx, clusterId, req)
@@ -204,12 +279,17 @@ func (s *egressLauncher) StartEgressWithClusterId(ctx context.Context, clusterId
 		return nil, err
 	}
 
+	fmt.Println("Egress started", info)
+	logger.Infow("Egress started", "egressID", info.EgressId, "clusterId", clusterId)
+
 	s.telemetry.EgressStarted(ctx, info)
-	go func() {
-		if err := s.es.StoreEgress(ctx, info); err != nil {
-			logger.Errorw("could not write egress info", err)
-		}
-	}()
+
+	s.eps.StoreEgress(info)
+	// go func() {
+	// 	if err := s.es.StoreEgress(ctx, info); err != nil {
+	// 		logger.Errorw("could not write egress info", err)
+	// 	}
+	// }()
 
 	return info, nil
 }
@@ -336,15 +416,16 @@ func (s *EgressService) StopEgress(ctx context.Context, req *livekit.StopEgressR
 		return nil, ErrEgressNotConnected
 	}
 
-	info, err := s.es.LoadEgress(ctx, req.EgressId)
-	if err != nil {
-		return nil, err
+	info, ok := s.eps.LoadEgress(req.EgressId)
+	if !ok {
+		return nil, fmt.Errorf("egress not found")
 	} else {
 		if info.Status != livekit.EgressStatus_EGRESS_STARTING &&
 			info.Status != livekit.EgressStatus_EGRESS_ACTIVE {
 			return nil, twirp.NewError(twirp.FailedPrecondition, fmt.Sprintf("egress with status %s cannot be stopped", info.Status.String()))
 		}
 	}
+	
 
 	race := rpc.NewRace[livekit.EgressInfo](ctx)
 	if s.clientDeprecated != nil {
@@ -362,16 +443,18 @@ func (s *EgressService) StopEgress(ctx context.Context, req *livekit.StopEgressR
 			return s.psrpcClient.StopEgress(ctx, req.EgressId, req)
 		})
 	}
-	_, info, err = race.Wait()
+	_, info, err := race.Wait()
 	if err != nil {
 		return nil, err
 	}
 
-	go func() {
-		if err := s.es.UpdateEgress(ctx, info); err != nil {
-			logger.Errorw("could not write egress info", err)
-		}
-	}()
+	s.eps.UpdateEgress(info)
+
+	// go func() {
+	// 	if err := s.es.UpdateEgress(ctx, info); err != nil {
+	// 		logger.Errorw("could not write egress info", err)
+	// 	}
+	// }()
 
 	return info, nil
 }

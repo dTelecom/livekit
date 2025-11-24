@@ -55,6 +55,7 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		getEgressClient,
 		egress.NewRedisRPCClient,
 		getEgressStore,
+		NewEgressProcessStore,
 		NewEgressLauncher,
 		NewEgressService,
 		rpc.NewIngressClient,
