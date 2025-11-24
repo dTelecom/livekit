@@ -30,6 +30,7 @@ const (
 	eventTypeAddTrack eventType = "add_rack"
 	eventTypeOffer    eventType = "offer"
 	eventTypeMessage  eventType = "message"
+	eventTypeFatal    eventType = "fatal"
 )
 
 type relayState int32
@@ -204,6 +205,7 @@ type PcRelay struct {
 	onTrack     atomic.Value // func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, meta *TrackMeta)
 	onMessage   atomic.Value // func(message []byte)
 	onICEChange atomic.Value // func(webrtc.ICEConnectionState)
+	onFatal     atomic.Value // func(err error)
 
 	state     atomic.Int32 // relayState
 	closedCh  chan struct{}
@@ -383,6 +385,11 @@ func (r *PcRelay) resignal() {
 	case <-ctx.Done():
 		r.logger.Errorw("Timeout waiting for answer", ctx.Err(), "relayID", r.id, "side", r.side, "timeout", "5s")
 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "timeout_wait_answer").Add(1)
+		
+		// Connection is malfunctioning, must be closed on both sides
+		err := fmt.Errorf("timeout waiting for answer: %w", ctx.Err())
+		r.sendFatal(err.Error())
+		r.signalFatal(err)
 	}
 }
 
@@ -833,6 +840,9 @@ func (r *PcRelay) onSignalingDataChannelMessage(msg webrtc.DataChannelMessage) {
 		if f := r.onMessage.Load(); f != nil {
 			f.(func(id uint64, payload []byte))(event.ID, event.Payload)
 		}
+	} else if event.Type == eventTypeFatal {
+		r.logger.Errorw("Fatal event received", nil, "relayID", r.id, "side", r.side)
+		r.signalFatal(fmt.Errorf("fatal event received: %s", event.Payload))
 	}
 }
 
@@ -865,4 +875,25 @@ func (r *PcRelay) Close() {
 
 func (r *PcRelay) State() relayState {
 	return relayState(r.state.Load())
+}
+
+func (r *PcRelay) OnFatal(f func(err error)) {
+	r.onFatal.Store(f)
+}
+
+func (r *PcRelay) signalFatal(err error) {
+	if f := r.onFatal.Load(); f != nil {
+		f.(func(err error))(err)
+	}
+}
+
+func (r *PcRelay) sendFatal(reason string) {
+	event := dcEvent{
+		ID:      r.rand.Uint64(),
+		Type:    eventTypeFatal,
+		Payload: []byte(reason),
+	}
+	if _, err := r.send(event, false); err != nil {
+		r.logger.Errorw("Failed to send fatal event", err, "relayID", r.id, "side", r.side)
+	}
 }
