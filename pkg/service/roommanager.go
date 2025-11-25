@@ -699,14 +699,9 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 
 			rel.OnConnectionStateChange(func(state webrtc.ICEConnectionState) {
 				logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
-				if state == webrtc.ICEConnectionStateFailed {
+				if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateClosed {
 					r.RemoveRelayedParticipants(newRoom, fromPeerId)
 				}
-			})
-
-			rel.OnFatal(func(err error) {
-				logger.Errorw("In-relay fatal error", err, "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey)
-				r.RemoveRelayedParticipants(newRoom, fromPeerId)
 			})
 
 			rel.OnMessage(func(id uint64, payload []byte) {
@@ -862,6 +857,8 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 
 		rel.OnFatal(func(err error) {
 			logger.Errorw("Out relay fatal error", err, "relayID", rel.ID(), "peerId", peerId, "roomKey", roomKey)
+
+			outRelayCollection.RemoveRelay(rel)
 			roomCommunicator.RemovePeer(peerId)
 		})
 

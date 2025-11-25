@@ -388,7 +388,6 @@ func (r *PcRelay) resignal() {
 		
 		// Connection is malfunctioning, must be closed on both sides
 		err := fmt.Errorf("timeout waiting for answer: %w", ctx.Err())
-		r.sendFatal(err.Error())
 		r.signalFatal(err)
 	}
 }
@@ -840,9 +839,6 @@ func (r *PcRelay) onSignalingDataChannelMessage(msg webrtc.DataChannelMessage) {
 		if f := r.onMessage.Load(); f != nil {
 			f.(func(id uint64, payload []byte))(event.ID, event.Payload)
 		}
-	} else if event.Type == eventTypeFatal {
-		r.logger.Errorw("Fatal event received", nil, "relayID", r.id, "side", r.side)
-		r.signalFatal(fmt.Errorf("fatal event received: %s", event.Payload))
 	}
 }
 
@@ -884,16 +880,5 @@ func (r *PcRelay) OnFatal(f func(err error)) {
 func (r *PcRelay) signalFatal(err error) {
 	if f := r.onFatal.Load(); f != nil {
 		f.(func(err error))(err)
-	}
-}
-
-func (r *PcRelay) sendFatal(reason string) {
-	event := dcEvent{
-		ID:      r.rand.Uint64(),
-		Type:    eventTypeFatal,
-		Payload: []byte(reason),
-	}
-	if _, err := r.send(event, false); err != nil {
-		r.logger.Errorw("Failed to send fatal event", err, "relayID", r.id, "side", r.side)
 	}
 }
