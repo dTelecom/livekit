@@ -857,8 +857,6 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 
 		rel.OnFatal(func(err error) {
 			logger.Errorw("Out relay fatal error", err, "relayID", rel.ID(), "peerId", peerId, "roomKey", roomKey)
-
-			outRelayCollection.RemoveRelay(rel)
 			roomCommunicator.RemovePeer(peerId)
 		})
 
