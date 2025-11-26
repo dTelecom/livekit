@@ -30,7 +30,6 @@ const (
 	eventTypeAddTrack eventType = "add_rack"
 	eventTypeOffer    eventType = "offer"
 	eventTypeMessage  eventType = "message"
-	eventTypeFatal    eventType = "fatal"
 )
 
 type relayState int32
