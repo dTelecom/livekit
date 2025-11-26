@@ -15,6 +15,7 @@ import (
 	"github.com/pion/rtcp"
 	"github.com/pion/sdp/v3"
 	"github.com/pion/webrtc/v3"
+	"github.com/pion/webrtc/v3/pkg/rtcerr"
 	"github.com/pkg/errors"
 	"go.uber.org/atomic"
 	"google.golang.org/protobuf/proto"
@@ -1204,6 +1205,11 @@ func (p *ParticipantImpl) forwardTrackToRelays(publishedTrack *MediaTrack, track
 		publishedTrack.AddOnClose(func() {
 			err := rel.RemoveTrack(sender)
 			if err != nil {
+				invalidStateError := &rtcerr.InvalidStateError{Err: webrtc.ErrConnectionClosed}
+				if errors.Is(err, invalidStateError.Err) {
+					p.params.Logger.Warnw("remove track from relay", err)
+					return
+				}
 				p.params.Logger.Errorw("remove track from relay", err)
 			}
 		})

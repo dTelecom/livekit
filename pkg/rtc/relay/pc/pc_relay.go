@@ -30,6 +30,7 @@ const (
 	eventTypeAddTrack eventType = "add_rack"
 	eventTypeOffer    eventType = "offer"
 	eventTypeMessage  eventType = "message"
+	eventTypeFatal    eventType = "fatal"
 )
 
 type relayState int32
@@ -204,6 +205,7 @@ type PcRelay struct {
 	onTrack     atomic.Value // func(track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, meta *TrackMeta)
 	onMessage   atomic.Value // func(message []byte)
 	onICEChange atomic.Value // func(webrtc.ICEConnectionState)
+	onFatal     atomic.Value // func(err error)
 
 	state     atomic.Int32 // relayState
 	closedCh  chan struct{}
@@ -383,6 +385,10 @@ func (r *PcRelay) resignal() {
 	case <-ctx.Done():
 		r.logger.Errorw("Timeout waiting for answer", ctx.Err(), "relayID", r.id, "side", r.side, "timeout", "5s")
 		prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "timeout_wait_answer").Add(1)
+		
+		// Connection is malfunctioning, must be closed on both sides
+		err := fmt.Errorf("timeout waiting for answer: %w", ctx.Err())
+		r.signalFatal(err)
 	}
 }
 
@@ -865,4 +871,14 @@ func (r *PcRelay) Close() {
 
 func (r *PcRelay) State() relayState {
 	return relayState(r.state.Load())
+}
+
+func (r *PcRelay) OnFatal(f func(err error)) {
+	r.onFatal.Store(f)
+}
+
+func (r *PcRelay) signalFatal(err error) {
+	if f := r.onFatal.Load(); f != nil {
+		f.(func(err error))(err)
+	}
 }
