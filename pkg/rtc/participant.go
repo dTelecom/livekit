@@ -1154,6 +1154,10 @@ func (p *ParticipantImpl) onSubscriberOffer(offer webrtc.SessionDescription) err
 }
 
 func (p *ParticipantImpl) forwardTrackToRelays(publishedTrack *MediaTrack, track *webrtc.TrackRemote) {
+	if p.Hidden() {
+        return
+    }
+
 	p.params.RelayCollection.OnceForEach(func(rel relay.Relay) {
 		codec := track.Codec()
 		tr := publishedTrack.MediaTrackReceiver.Receiver(track.Codec().MimeType)
