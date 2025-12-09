@@ -1152,7 +1152,11 @@ func iceServerForStunServers(servers []string) *livekit.ICEServer {
 func getUpdatesPayloadForRelay(room *rtc.Room, updates []*livekit.ParticipantInfo) ([]byte, error) {
 	updatesForRelay := make([]*livekit.ParticipantInfo, 0, len(updates))
 	for _, update := range updates {
-		if _, ok := room.GetParticipant(livekit.ParticipantIdentity(update.Identity)).(*rtc.RelayedParticipantImpl); ok {
+		if update.Relayed {
+			continue
+		}
+
+		if perm := update.Permission; perm != nil && perm.Hidden {
 			continue
 		}
 		updatesForRelay = append(updatesForRelay, update)
@@ -1264,6 +1268,8 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 
 			participant, _ = rtc.NewRelayedParticipant(rtc.RelayedParticipantParams{
 				Identity:    participantIdentity,
+				Hidden:      pi.Permission.Hidden,
+				Recorder:    pi.Permission.Recorder,
 				Name:        livekit.ParticipantName(pi.Name),
 				SID:         livekit.ParticipantID(pi.Sid),
 				Config:      &rtcConfig,

@@ -32,6 +32,8 @@ type RelayedParticipantParams struct {
 	Config            *WebRTCConfig
 	AudioConfig       config.AudioConfig
 	VideoConfig       config.VideoConfig
+	Hidden            bool
+	Recorder          bool
 	Logger            logger.Logger
 	SimTracks         map[uint32]SimulcastTrackInfo
 	InitialVersion    uint32
@@ -99,6 +101,8 @@ func NewRelayedParticipant(params RelayedParticipantParams) (*RelayedParticipant
 				CanPublish:        &t,
 				CanPublishData:    &t,
 				CanPublishSources: []string{"camera", "microphone", "screen_share", "screen_share_audio"},
+				Hidden: params.Hidden,
+				Recorder: params.Recorder,
 			},
 		},
 		connectedAt: time.Now(),
@@ -233,11 +237,11 @@ func (p *RelayedParticipantImpl) HasPermission(trackID livekit.TrackID, subIdent
 }
 
 func (p *RelayedParticipantImpl) Hidden() bool {
-	return false
+	return p.params.Hidden
 }
 
 func (p *RelayedParticipantImpl) IsRecorder() bool {
-	return false
+	return p.params.Recorder
 }
 
 func (p *RelayedParticipantImpl) Start() {
