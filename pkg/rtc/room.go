@@ -650,7 +650,7 @@ func (r *Room) CloseIfEmpty() {
 	}
 
 	for _, p := range r.participants {
-		if !p.IsRecorder() {
+		if _, ok := p.(*ParticipantImpl); ok || p.IsRecorder() {
 			r.lock.Unlock()
 			return
 		}
