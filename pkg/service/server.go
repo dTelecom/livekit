@@ -6,11 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"golang.org/x/crypto/acme/autocert"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"runtime/pprof"
-	"golang.org/x/crypto/acme/autocert"
 	"time"
 
 	"github.com/livekit/livekit-server/pkg/rtc/relay"
@@ -33,6 +33,10 @@ import (
 	"github.com/livekit/livekit-server/version"
 )
 
+const (
+	serverShutdownTimeout = 60 * time.Second
+)
+
 type LivekitServer struct {
 	config         *config.Config
 	rtcService     *RTCService
@@ -48,6 +52,7 @@ type LivekitServer struct {
 	clientProvider *ClientProvider
 	nodeProvider   *NodeProvider
 	running        atomic.Bool
+	acceptingConnections atomic.Bool
 	doneChan       chan struct{}
 	closedChan     chan struct{}
 	TLSMuxer       *vhost.TLSMuxer
@@ -74,11 +79,11 @@ func NewLivekitServer(conf *config.Config,
 	certManager *autocert.Manager,
 ) (s *LivekitServer, err error) {
 	s = &LivekitServer{
-		config:       conf,
-		rtcService:   rtcService,
-		router:       router,
-		roomManager:  roomManager,
-		signalServer: signalServer,
+		config:        conf,
+		rtcService:    rtcService,
+		router:        router,
+		roomManager:   roomManager,
+		signalServer:  signalServer,
 		roomAllocator: roomAllocator,
 		// turn server starts automatically
 		turnServer:     turnServer,
@@ -131,7 +136,7 @@ func NewLivekitServer(conf *config.Config,
 	mux.Handle(roomServer.PathPrefix(), roomServer)
 	mux.Handle(egressServer.PathPrefix(), egressServer)
 	mux.Handle(ingressServer.PathPrefix(), ingressServer)
-	mux.Handle("/rtc", rtcService)
+	mux.Handle("/rtc", s.refuseIfShuttingDown(rtcService))
 	mux.HandleFunc("/rtc/validate", rtcService.Validate)
 	mux.HandleFunc("/relevant", relevantNodesHandler.HTTPHandlerNode)
 	mux.HandleFunc("/relevants", relevantNodesHandler.HTTPHandlerNodes)
@@ -140,7 +145,7 @@ func NewLivekitServer(conf *config.Config,
 	mux.HandleFunc("/peer-debug", mainDebugHandler.peerHTTPHandler)
 	mux.HandleFunc("/traffic-debug", mainDebugHandler.trafficHTTPHandler)
 	mux.HandleFunc("/", s.defaultHandler)
-	mux.HandleFunc("/whip", s.whipHandler.HandleWhipRequest)
+	mux.Handle("/whip", s.refuseIfShuttingDown(http.HandlerFunc(s.whipHandler.HandleWhipRequest)))
 
 	if conf.Domain != "" {
 		s.httpsServer = &http.Server{
@@ -309,6 +314,7 @@ func (s *LivekitServer) Start() error {
 	time.Sleep(100 * time.Millisecond)
 
 	s.running.Store(true)
+	s.acceptingConnections.Store(true)
 
 	<-s.doneChan
 
@@ -357,16 +363,29 @@ func (s *LivekitServer) Stop(force bool) {
 }
 
 func (s *LivekitServer) StopAndWaitForParticipantsToMigrate() {
+	s.acceptingConnections.Store(false)
 	s.router.Drain()
 
 	s.roomManager.MigrateAllParticipants()
 
+	timer := time.NewTimer(serverShutdownTimeout)
+	defer timer.Stop()
+
 	partTicker := time.NewTicker(5 * time.Second)
-	waitingForParticipants := s.roomManager.HasLocalParticipants()
-	for waitingForParticipants {
-		<-partTicker.C
-		logger.Infow("waiting for participants to exit")
-		waitingForParticipants = s.roomManager.HasLocalParticipants()
+
+loop:
+	for {
+		select {
+		case <-timer.C:
+			logger.Infow("timeout waiting for participants to exit")
+			break loop
+		case <-partTicker.C:
+			logger.Infow("waiting for participants to exit")
+			waitingForParticipants := s.roomManager.HasLocalParticipants()
+			if !waitingForParticipants {
+				break loop
+			}
+		}
 	}
 	partTicker.Stop()
 
@@ -473,6 +492,16 @@ func (s *LivekitServer) backgroundWorker() {
 			s.roomManager.SaveClientsBandwidth()
 		}
 	}
+}
+
+func (s *LivekitServer) refuseIfShuttingDown(next http.Handler) http.Handler {
+    return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if !s.acceptingConnections.Load() {
+            http.Error(w, "server shutting down", http.StatusServiceUnavailable)
+            return
+        }
+        next.ServeHTTP(w, r)
+    })
 }
 
 func configureMiddlewares(handler http.Handler, middlewares ...negroni.Handler) *negroni.Negroni {
