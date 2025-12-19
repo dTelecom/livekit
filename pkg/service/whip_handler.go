@@ -102,7 +102,7 @@ type whipParticipantInfo struct {
 
 func (s *WhipHandler) authorize(ctx context.Context, streamKey string) (*whipParticipantInfo, error) {
 	if streamKey == "" {
-		return nil, fmt.Errorf("stream key is required")
+		return nil, fmt.Errorf("token is required")
 	}
 
 	token := strings.TrimPrefix(streamKey, "Bearer ")
@@ -138,10 +138,14 @@ func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	participantInfo, err := s.authorize(r.Context(), r.Header.Get("Authorization"))
+	participantInfo, err := s.authorize(r.Context(), r.URL.Query().Get("accessToken"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusUnauthorized)
-		return
+		logger.Warnw("failed to authorize from query accessToken", err, "url", r.URL.Path)
+		participantInfo, err = s.authorize(r.Context(), r.Header.Get("Authorization"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusUnauthorized)
+			return
+		}
 	}
 
 	if r.Method == http.MethodDelete {

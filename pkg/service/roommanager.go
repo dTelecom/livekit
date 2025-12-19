@@ -1446,7 +1446,7 @@ func (r *RoomManager) MigrateAllParticipants() {
 
 			logger.Infow("Migrating participant", "identity", p.Identity(), "roomKey", room.Key(), "roomID", room.ID())
 			if pi, ok := p.(*rtc.ParticipantImpl); ok {
-				pi.IssueFullReconnect(types.ParticipantCloseReasonServiceRequestRemoveParticipant)
+				pi.IssueFullReconnect(types.ParticipantCloseReasonRoomManagerStop)
 				logger.Debugw("Migration message has been sent to participant", "identity", p.Identity(), "roomKey", room.Key(), "roomID", room.ID())
 			}
 		}
