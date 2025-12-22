@@ -60,6 +60,11 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		authToken = r.FormValue(accessTokenParam)
 	}
 
+    // tmp skip token verification in middleware
+	if r.URL != nil && r.URL.Path == "/whip" {
+		authToken = ""
+	}
+
 	if authToken != "" {
 		v, err := auth.ParseAPIToken(authToken)
 		if err != nil {
