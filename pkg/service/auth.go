@@ -60,43 +60,58 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		authToken = r.FormValue(accessTokenParam)
 	}
 
-    // tmp skip token verification in middleware
-	if r.URL != nil && r.URL.Path == "/whip" {
-		authToken = ""
+	var tokenCandidates []string
+	if authToken != "" {
+		tokenCandidates = append(tokenCandidates, authToken)
 	}
 
-	if authToken != "" {
-		v, err := auth.ParseAPIToken(authToken)
-		if err != nil {
+	if r.URL != nil && r.URL.Path == "/whip" {
+		queryToken := r.URL.Query().Get("accessToken")
+		if queryToken != "" {
+			tokenCandidates = append(tokenCandidates, queryToken)
+		}
+	}
+
+	if len(tokenCandidates) > 0 {
+		var foundToken string
+
+		for _, t := range tokenCandidates {
+			v, err := auth.ParseAPIToken(t)
+			if err != nil {
+				continue
+			}
+
+			apiKey := v.APIKey()
+			client, err := m.clientProvider.ClientByAddress(r.Context(), apiKey)
+			if err != nil {
+				handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract, err: %s", apiKey, err)))
+				return
+			}
+			if client.Key == "" {
+				handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract", apiKey)))
+				return
+			}
+
+			grants, err := v.Verify(client.Key)
+			if err != nil {
+				continue
+			}
+
+			foundToken = t
+
+			// set grants in context
+			ctx := context.WithValue(r.Context(), grantsKey{}, grants)
+			ctx = context.WithValue(ctx, apiKeyKey{}, apiKey)
+			ctx = context.WithValue(ctx, limitKey{}, client.Limit)
+
+			r = r.WithContext(ctx)
+			break
+		}
+
+		if foundToken == "" {
 			handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
 			return
 		}
-
-		apiKey := v.APIKey()
-
-		client, err := m.clientProvider.ClientByAddress(r.Context(), apiKey)
-		if err != nil {
-			handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract, err: %s", apiKey, err)))
-			return
-		}
-
-		if client.Key == "" {
-			handleError(w, http.StatusUnauthorized, errors.New(fmt.Sprintf("wallet %s not exists in contract", apiKey)))
-			return
-		}
-
-		grants, err := v.Verify(client.Key)
-		if err != nil {
-			handleError(w, http.StatusUnauthorized, fmt.Errorf("invalid token: %s, error: %s", authToken, err))
-			return
-		}
-
-		// set grants in context
-		ctx := context.WithValue(r.Context(), grantsKey{}, grants)
-		ctx = context.WithValue(ctx, apiKeyKey{}, apiKey)
-		ctx = context.WithValue(ctx, limitKey{}, client.Limit)
-
-		r = r.WithContext(ctx)
 	}
 
 	next.ServeHTTP(w, r)
