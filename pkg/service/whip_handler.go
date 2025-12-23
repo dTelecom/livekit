@@ -2,18 +2,15 @@ package service
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/livekit/livekit-server/pkg/config"
-	"github.com/livekit/protocol/auth"
 	"github.com/livekit/protocol/logger"
 	"github.com/pion/interceptor"
 	"github.com/pion/rtcp"
@@ -95,39 +92,6 @@ func NewWhipHandler(clientProvider *ClientProvider, conf *config.Config) *WhipHa
 	}
 }
 
-type whipParticipantInfo struct {
-	token  string
-	grants *auth.ClaimGrants
-}
-
-func (s *WhipHandler) authorize(ctx context.Context, streamKey string) (*whipParticipantInfo, error) {
-	if streamKey == "" {
-		return nil, fmt.Errorf("token is required")
-	}
-
-	token := strings.TrimPrefix(streamKey, "Bearer ")
-	v, err := auth.ParseAPIToken(token)
-	if err != nil {
-		return nil, fmt.Errorf("invalid token: %s", err.Error())
-	}
-
-	apiKey := v.APIKey()
-	client, err := s.clientProvider.ClientByAddress(ctx, apiKey)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get client: %s", err.Error())
-	}
-
-	grants, err := v.Verify(client.Key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify token: %s", err.Error())
-	}
-
-	return &whipParticipantInfo{
-		token:  strings.TrimLeft(token, " "),
-		grants: grants,
-	}, nil
-}
-
 func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "POST, DELETE, OPTIONS")
@@ -138,18 +102,11 @@ func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	participantInfo, err := s.authorize(r.Context(), r.URL.Query().Get("accessToken"))
-	if err != nil {
-		logger.Warnw("failed to authorize from query accessToken", err, "url", r.URL.Path)
-		participantInfo, err = s.authorize(r.Context(), r.Header.Get("Authorization"))
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusUnauthorized)
-			return
-		}
-	}
+	claims := GetGrants(r.Context())
+	token := GetToken(r.Context())
 
 	if r.Method == http.MethodDelete {
-		s.sessionManager.RemoveSession(participantInfo.token)
+		s.sessionManager.RemoveSession(token)
 		w.WriteHeader(http.StatusOK)
 		return
 	}
@@ -160,7 +117,7 @@ func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err = s.createSession(w, s.prepareOffer(sdpOffer), participantInfo.token, string(participantInfo.grants.Name))
+	err = s.createSession(w, s.prepareOffer(sdpOffer), token, string(claims.Name))
 	if err != nil {
 		logger.Errorw("failed to create session", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)

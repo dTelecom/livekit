@@ -22,6 +22,7 @@ const (
 type grantsKey struct{}
 type apiKeyKey struct{}
 type limitKey struct{}
+type tokenKey struct{}
 
 var (
 	ErrPermissionDenied          = errors.New("permissions denied")
@@ -45,34 +46,39 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 	}
 
-	authHeader := r.Header.Get(authorizationHeader)
-	var authToken string
+	var tokenParseError error
+	var parsedToken *auth.APIKeyTokenVerifier
+	var token string
 
-	if authHeader != "" {
-		if !strings.HasPrefix(authHeader, bearerPrefix) {
-			handleError(w, http.StatusUnauthorized, ErrMissingAuthorization)
-			return
+	// attempt to find from request params
+	authTokenParams := r.FormValue(accessTokenParam)
+	if authTokenParams != "" {
+		parsedToken, tokenParseError = auth.ParseAPIToken(authTokenParams)
+		if tokenParseError == nil {
+			token = authTokenParams
 		}
-
-		authToken = authHeader[len(bearerPrefix):]
-	} else {
-		// attempt to find from request header
-		authToken = r.FormValue(accessTokenParam)
 	}
 
-    // tmp skip token verification in middleware
-	if r.URL != nil && r.URL.Path == "/whip" {
-		authToken = ""
+	if parsedToken == nil {
+		authHeader := r.Header.Get(authorizationHeader)
+		if authHeader != "" {
+			if strings.HasPrefix(authHeader, bearerPrefix) {
+				authTokenHeader := authHeader[len(bearerPrefix):]
+				parsedToken, tokenParseError = auth.ParseAPIToken(authTokenHeader)
+				if tokenParseError == nil {
+					token = authTokenHeader
+				}
+			}
+		}
 	}
 
-	if authToken != "" {
-		v, err := auth.ParseAPIToken(authToken)
-		if err != nil {
-			handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
-			return
-		}
+	if tokenParseError != nil {
+		handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
+		return
+	}
 
-		apiKey := v.APIKey()
+	if parsedToken != nil {
+		apiKey := parsedToken.APIKey()
 
 		client, err := m.clientProvider.ClientByAddress(r.Context(), apiKey)
 		if err != nil {
@@ -85,9 +91,9 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 			return
 		}
 
-		grants, err := v.Verify(client.Key)
+		grants, err := parsedToken.Verify(client.Key)
 		if err != nil {
-			handleError(w, http.StatusUnauthorized, fmt.Errorf("invalid token: %s, error: %s", authToken, err))
+			handleError(w, http.StatusUnauthorized, fmt.Errorf("invalid token: %s, error: %s", apiKey, err))
 			return
 		}
 
@@ -95,6 +101,7 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		ctx := context.WithValue(r.Context(), grantsKey{}, grants)
 		ctx = context.WithValue(ctx, apiKeyKey{}, apiKey)
 		ctx = context.WithValue(ctx, limitKey{}, client.Limit)
+		ctx = context.WithValue(ctx, tokenKey{}, token)
 
 		r = r.WithContext(ctx)
 	}
@@ -127,6 +134,15 @@ func GetLimit(ctx context.Context) int64 {
 		return 0
 	}
 	return limit
+}
+
+func GetToken(ctx context.Context) string {
+	val := ctx.Value(tokenKey{})
+	token, ok := val.(string)
+	if !ok {
+		return ""
+	}
+	return token
 }
 
 func WithGrants(ctx context.Context, grants *auth.ClaimGrants) context.Context {
