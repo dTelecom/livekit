@@ -105,6 +105,16 @@ func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) 
 	claims := GetGrants(r.Context())
 	token := GetToken(r.Context())
 
+    if claims == nil {
+    	http.Error(w, "no claims", http.StatusUnauthorized)
+    	return
+    }
+
+    if token == "" {
+    	http.Error(w, "no token", http.StatusUnauthorized)
+    	return
+    }
+
 	if r.Method == http.MethodDelete {
 		s.sessionManager.RemoveSession(token)
 		w.WriteHeader(http.StatusOK)

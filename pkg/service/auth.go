@@ -72,11 +72,6 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		}
 	}
 
-	if tokenParseError != nil {
-		handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
-		return
-	}
-
 	if parsedToken != nil {
 		apiKey := parsedToken.APIKey()
 
@@ -104,6 +99,11 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 		ctx = context.WithValue(ctx, tokenKey{}, token)
 
 		r = r.WithContext(ctx)
+	} else {
+		if tokenParseError != nil {
+			handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
+			return
+		}
 	}
 
 	next.ServeHTTP(w, r)
