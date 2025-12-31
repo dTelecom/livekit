@@ -16,7 +16,6 @@ func NewRequestLogger() *RequestLogger {
 	}
 }
 
-// negroni.Handler
 func (m *RequestLogger) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	m.log.Infow("http request received",
 		"method", r.Method,
