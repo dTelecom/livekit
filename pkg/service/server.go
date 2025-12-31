@@ -102,7 +102,7 @@ func NewLivekitServer(conf *config.Config,
 	middlewares := []negroni.Handler{
 		// always first
 		negroni.NewRecovery(),
-		utils.NewRequestLogger(),
+		utils.NewDebugRequestLogger(),
 		// CORS is allowed, we rely on token authentication to prevent improper use
 		cors.New(cors.Options{
 			AllowOriginFunc: func(origin string) bool {
