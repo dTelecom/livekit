@@ -6,15 +6,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"golang.org/x/crypto/acme/autocert"
 	"net"
 	"net/http"
 	_ "net/http/pprof"
 	"runtime/pprof"
 	"time"
 
+	"golang.org/x/crypto/acme/autocert"
+
 	"github.com/livekit/livekit-server/pkg/rtc/relay"
 	"github.com/livekit/livekit-server/pkg/rtc/relay/pc"
+	"github.com/livekit/livekit-server/pkg/utils"
 	"github.com/pion/turn/v2"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/rs/cors"
@@ -100,6 +102,7 @@ func NewLivekitServer(conf *config.Config,
 	middlewares := []negroni.Handler{
 		// always first
 		negroni.NewRecovery(),
+		utils.NewRequestLogger(),
 		// CORS is allowed, we rely on token authentication to prevent improper use
 		cors.New(cors.Options{
 			AllowOriginFunc: func(origin string) bool {
