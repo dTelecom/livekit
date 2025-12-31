@@ -6,17 +6,17 @@ import (
 	"github.com/livekit/protocol/logger"
 )
 
-type RequestLogger struct {
+type DebugRequestLogger struct {
 	log logger.Logger
 }
 
-func NewDebugRequestLogger() *RequestLogger {
-	return &RequestLogger{
+func NewDebugRequestLogger() *DebugRequestLogger {
+	return &DebugRequestLogger{
 		log: logger.GetLogger(),
 	}
 }
 
-func (m *RequestLogger) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
+func (m *DebugRequestLogger) ServeHTTP(w http.ResponseWriter, r *http.Request, next http.HandlerFunc) {
 	m.log.Debugw("http request received",
 		"method", r.Method,
 		"path", r.URL.Path,
