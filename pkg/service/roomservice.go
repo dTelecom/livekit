@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"reflect"
 	"strconv"
 	"time"
 
@@ -267,9 +266,38 @@ func (s *RoomService) UpdateParticipant(ctx context.Context, req *livekit.Update
 			return err
 		}
 		if participant != nil {
-			cond1 := req.Name != "" && participant.Name != req.Name
-			cond2 := req.Metadata != "" && participant.Metadata != req.Metadata
-			cond3 := req.Permission != nil && !reflect.DeepEqual(participant.Permission, req.Permission)
+			cond1 := false
+			if req.Name != "" {
+				cond1 = participant.Name != req.Name
+			}
+
+			cond2 := false
+			if req.Metadata != "" {
+				cond2 = participant.Metadata != req.Metadata
+			}
+
+			cond3 := false
+			if req.Permission != nil {
+				p1 := participant.Permission
+				p2 := req.Permission
+
+				if p1.CanPublish != p2.CanPublish {
+					cond3 = true
+				}
+				if p1.CanSubscribe != p2.CanSubscribe {
+					cond3 = true
+				}
+				if p1.CanPublishData != p2.CanPublishData {
+					cond3 = true
+				}
+				if p1.Hidden != p2.Hidden {
+					cond3 = true
+				}
+				if p1.Recorder != p2.Recorder {
+					cond3 = true
+				}
+			}
+
 			if cond1 || cond2 || cond3 {
 				return ErrOperationFailed
 			}
