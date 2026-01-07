@@ -49,6 +49,11 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 	var tokenParseError error
 	var parsedToken *auth.APIKeyTokenVerifier
 	var token string
+	var skipAuth bool = false
+
+	if r.URL != nil && r.URL.Path == "/whip" && r.Method == http.MethodDelete {
+		skipAuth = true
+	}
 
 	// attempt to find from request params
 	authTokenParams := r.FormValue(accessTokenParam)
@@ -100,9 +105,11 @@ func (m *APIKeyAuthMiddleware) ServeHTTP(w http.ResponseWriter, r *http.Request,
 
 		r = r.WithContext(ctx)
 	} else {
-		if tokenParseError != nil {
-			handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
-			return
+		if skipAuth == false {
+			if tokenParseError != nil {
+				handleError(w, http.StatusUnauthorized, ErrInvalidAuthorizationToken)
+				return
+			}
 		}
 	}
 

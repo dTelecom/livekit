@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -102,22 +103,35 @@ func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	streamKey := ""
+	authHeader := r.Header.Get(authorizationHeader)
+	if authHeader != "" {
+		if strings.HasPrefix(authHeader, bearerPrefix) {
+			streamKey = authHeader[len(bearerPrefix):]
+		}
+	}
+
+	if streamKey == "" {
+		http.Error(w, "no stream key", http.StatusUnauthorized)
+		return
+	}
+
+	if r.Method == http.MethodDelete {
+		s.sessionManager.RemoveSession(streamKey)
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
 	claims := GetGrants(r.Context())
 	token := GetToken(r.Context())
 
-    if claims == nil {
-    	http.Error(w, "no claims", http.StatusUnauthorized)
-    	return
-    }
+	if claims == nil {
+		http.Error(w, "no claims", http.StatusUnauthorized)
+		return
+	}
 
-    if token == "" {
-    	http.Error(w, "no token", http.StatusUnauthorized)
-    	return
-    }
-
-	if r.Method == http.MethodDelete {
-		s.sessionManager.RemoveSession(token)
-		w.WriteHeader(http.StatusOK)
+	if token == "" {
+		http.Error(w, "no token", http.StatusUnauthorized)
 		return
 	}
 
@@ -127,7 +141,7 @@ func (s *WhipHandler) HandleWhipRequest(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	err = s.createSession(w, s.prepareOffer(sdpOffer), token, string(claims.Name))
+	err = s.createSession(w, s.prepareOffer(sdpOffer), token, string(claims.Name), streamKey)
 	if err != nil {
 		logger.Errorw("failed to create session", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -149,8 +163,8 @@ func (s *WhipHandler) prepareOffer(sdpOffer []byte) string {
 	return string(sdpOffer)
 }
 
-func (s *WhipHandler) createSession(res http.ResponseWriter, offer string, token string, user string) error {
-	logger.Debugw("creating session", "offer", offer, "token", token, "user", user)
+func (s *WhipHandler) createSession(res http.ResponseWriter, offer string, token string, user string, streamKey string) error {
+	logger.Debugw("creating session", "offer", offer, "token", token, "user", user, "streamKey", streamKey)
 	mediaEngine := &webrtc.MediaEngine{}
 
 	if err := s.registerCodecs(mediaEngine); err != nil {
@@ -187,7 +201,7 @@ func (s *WhipHandler) createSession(res http.ResponseWriter, offer string, token
 		return fmt.Errorf("failed to start livekit sdk publisher: %w", err)
 	}
 
-	s.sessionManager.AddSession(token, &whipSession{
+	s.sessionManager.AddSession(streamKey, &whipSession{
 		publisher:      publisher,
 		peerConnection: peerConnection,
 		CreatedAt:      time.Now(),
@@ -281,7 +295,7 @@ func (s *WhipHandler) createSession(res http.ResponseWriter, offer string, token
 		case webrtc.ICEConnectionStateFailed,
 			webrtc.ICEConnectionStateClosed,
 			webrtc.ICEConnectionStateDisconnected:
-			s.sessionManager.RemoveSession(token)
+			s.sessionManager.RemoveSession(streamKey)
 		}
 	})
 
