@@ -261,16 +261,6 @@ func (s *LivekitServer) Start() error {
 	}
 	logger.Infow("starting LiveKit server", values...)
 
-	ctx, _ := context.WithTimeout(context.Background(), time.Second*5)
-
-	err := s.nodeProvider.Save(ctx, Node{
-		Domain: s.config.Domain,
-		IP:     s.currentNode.Ip,
-	})
-	if err != nil {
-		logger.Errorw("node provider save error", err)
-	}
-
 	for _, promLn := range promListeners {
 		go s.promServer.Serve(promLn)
 	}
@@ -309,6 +299,19 @@ func (s *LivekitServer) Start() error {
 	}
 
 	go s.backgroundWorker()
+
+	// save node info to p2p network asynchronously to avoid blocking server startup
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second*5)
+		defer cancel()
+		err := s.nodeProvider.Save(ctx, Node{
+			Domain: s.config.Domain,
+			IP:     s.currentNode.Ip,
+		})
+		if err != nil {
+			logger.Errorw("node provider save error", err)
+		}
+	}()
 
 	// give time for Serve goroutine to start
 	time.Sleep(100 * time.Millisecond)
