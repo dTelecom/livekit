@@ -610,6 +610,9 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 	pendingAnswers := map[string]chan []byte{}
 	pendingAnswersMu := sync.Mutex{}
 
+	pendingRelayTracks := map[livekit.ParticipantIdentity][]pendingRelayTrack{}
+	pendingRelayTracksMu := sync.Mutex{}
+
 	packOffer := func(receiverPeerId string, relayId string) func(offer []byte) ([]byte, error) {
 		return func(offer []byte) ([]byte, error) {
 			answer := make(chan []byte, 1)
@@ -671,6 +674,13 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 			if prev != nil {
 				logger.Infow("Delete in relay", "fromPeerId", fromPeerId, "roomKey", roomKey, "relayID", prev.ID())
 				inRelayCollection.RemoveRelay(prev)
+
+				// Clear stale pending tracks from previous relay
+				pendingRelayTracksMu.Lock()
+				for k := range pendingRelayTracks {
+					delete(pendingRelayTracks, k)
+				}
+				pendingRelayTracksMu.Unlock()
 			}
 
 			logger.Infow("In-relay not found, creating new one", "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
@@ -701,6 +711,13 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 				logger.Infow("In-relay connection state changed", "state", state.String(), "relayID", rel.ID(), "fromPeerId", fromPeerId, "roomKey", roomKey, "nodeID", r.currentNode.Id)
 				if state == webrtc.ICEConnectionStateFailed || state == webrtc.ICEConnectionStateClosed {
 					r.RemoveRelayedParticipants(newRoom, fromPeerId)
+
+					// Clear pending tracks — they reference the now-closed PeerConnection
+					pendingRelayTracksMu.Lock()
+					for k := range pendingRelayTracks {
+						delete(pendingRelayTracks, k)
+					}
+					pendingRelayTracksMu.Unlock()
 				}
 			})
 
@@ -716,6 +733,22 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 				if len(msg.Updates) > 0 {
 					for _, update := range msg.Updates {
 						r.onRelayParticipantUpdate(newRoom, rel, update)
+
+						// Flush any tracks that arrived before this participant update
+						participantIdentity := livekit.ParticipantIdentity(update.Identity)
+						if rp, ok := newRoom.GetParticipant(participantIdentity).(*rtc.RelayedParticipantImpl); ok {
+							pendingRelayTracksMu.Lock()
+							pending := pendingRelayTracks[participantIdentity]
+							delete(pendingRelayTracks, participantIdentity)
+							pendingRelayTracksMu.Unlock()
+
+							for _, pt := range pending {
+								logger.Infow("Delivering queued relay track",
+									"identity", participantIdentity, "roomID", newRoom.ID(),
+									"age", time.Since(pt.createdAt).String())
+								rp.OnMediaTrack(pt.track, pt.receiver, pt.mid, pt.rid, pt.addTrackSignal.Track)
+							}
+						}
 					}
 					for _, op := range newRoom.GetParticipants() {
 						if _, ok := op.(*rtc.RelayedParticipantImpl); ok {
@@ -753,7 +786,19 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 					prometheus.ServiceOperationCounter.WithLabelValues("pc_relay", "error", "unmarshal_add_track_signal").Add(1)
 					return
 				}
-				onRelayAddTrack(newRoom, track, receiver, mid, rid, addTrackSignal)
+				identity := livekit.ParticipantIdentity(addTrackSignal.Identity)
+				if rp, ok := newRoom.GetParticipant(identity).(*rtc.RelayedParticipantImpl); ok {
+					rp.OnMediaTrack(track, receiver, mid, rid, addTrackSignal.Track)
+				} else {
+					logger.Infow("Participant not yet known, queuing relay track",
+						"identity", identity, "roomID", newRoom.ID(), "relayID", rel.ID())
+					pendingRelayTracksMu.Lock()
+					pendingRelayTracks[identity] = append(pendingRelayTracks[identity], pendingRelayTrack{
+						track: track, receiver: receiver, mid: mid, rid: rid,
+						addTrackSignal: addTrackSignal, createdAt: time.Now(),
+					})
+					pendingRelayTracksMu.Unlock()
+				}
 			})
 
 			answer, answerErr := rel.Answer(signal)
@@ -1346,21 +1391,20 @@ func (r *RoomManager) onRelayConnectionQualities(room *rtc.Room, connQualities [
 	}
 }
 
-func onRelayAddTrack(room *rtc.Room, track *webrtc.TrackRemote, receiver *webrtc.RTPReceiver, mid string, rid string, addTrackSignal relay.AddTrackSignal) {
-	participantIdentity := livekit.ParticipantIdentity(addTrackSignal.Identity)
-
-	if relayedParticipant, ok := room.GetParticipant(participantIdentity).(*rtc.RelayedParticipantImpl); ok {
-		relayedParticipant.OnMediaTrack(track, receiver, mid, rid, addTrackSignal.Track)
-	} else {
-		room.Logger.Errorw("Unknown relayed participant", nil, "identity", participantIdentity, "roomID", room.ID())
-	}
-}
 
 type relayMessage struct {
 	Updates       []*livekit.ParticipantInfo       `json:"updates,omitempty"`
 	DataPacket    []byte                           `json:"dataPacket,omitempty"`
 	Speakers      []*livekit.SpeakerInfo           `json:"speakers,omitempty"`
 	ConnQualities []*livekit.ConnectionQualityInfo `json:"connQualities,omitempty"`
+}
+
+type pendingRelayTrack struct {
+	track          *webrtc.TrackRemote
+	receiver       *webrtc.RTPReceiver
+	mid, rid       string
+	addTrackSignal relay.AddTrackSignal
+	createdAt      time.Time
 }
 
 func getMessageType(message interface{}) string {
