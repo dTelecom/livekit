@@ -180,7 +180,11 @@ func (r *LocalRouter) writeToP2P(roomKey livekit.RoomKey, msg *livekit.RTCNodeMe
 func (r *LocalRouter) WriteRoomRTC(ctx context.Context, roomKey livekit.RoomKey, msg *livekit.RTCNodeMessage) error {
 	msg.ParticipantKey = string(ParticipantKeyLegacy(roomKey, ""))
 	msg.ParticipantKeyB62 = string(ParticipantKey(roomKey, ""))
-	r.writeToP2P(roomKey, msg)
+	// Skip P2P publish for SendData — the local node delivers to participants via DC,
+	// and onBroadcastDataPacket already relays to remote nodes.
+	if _, isSendData := msg.Message.(*livekit.RTCNodeMessage_SendData); !isSendData {
+		r.writeToP2P(roomKey, msg)
+	}
 	return r.WriteNodeRTC(ctx, r.currentNode.Id, msg)
 }
 
