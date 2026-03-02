@@ -492,7 +492,7 @@ func (r *Room) RemoveParticipant(identity livekit.ParticipantIdentity, pID livek
 
 		delete(r.participants, identity)
 		delete(r.participantOpts, identity)
-		if reqSource, ok := r.participantRequestSources[identity]; ok {
+		if reqSource, ok := r.participantRequestSources[identity]; ok && reqSource != nil {
 			reqSource.Close()
 		}
 		delete(r.participantRequestSources, identity)
