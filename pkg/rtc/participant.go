@@ -117,6 +117,7 @@ type ParticipantImpl struct {
 	migrationTimer  *time.Timer
 
 	rtcpCh chan []rtcp.Packet
+	done   chan struct{}
 
 	// hold reference for MediaTrack
 	twcc *twcc.Responder
@@ -190,6 +191,7 @@ func NewParticipant(params ParticipantParams) (*ParticipantImpl, error) {
 	p := &ParticipantImpl{
 		params:                  params,
 		rtcpCh:                  make(chan []rtcp.Packet, 100),
+		done:                    make(chan struct{}),
 		pendingTracks:           make(map[string]*pendingTrackInfo),
 		pendingPublishingTracks: make(map[livekit.TrackID]*pendingTrackInfo),
 		disallowedSubscriptions: make(map[livekit.TrackID]livekit.ParticipantID),
@@ -676,6 +678,9 @@ func (p *ParticipantImpl) Close(sendLeave bool, reason types.ParticipantCloseRea
 	}
 
 	p.UpTrackManager.Close(!sendLeave)
+
+	// signal publisherRTCPWorker to exit (don't close rtcpCh directly — writers may race)
+	close(p.done)
 
 	p.lock.Lock()
 	disallowedSubscriptions := make(map[livekit.TrackID]livekit.ParticipantID)
@@ -1994,15 +1999,19 @@ func (p *ParticipantImpl) publisherRTCPWorker() {
 		}
 	}()
 
-	// read from rtcpChan
-	for pkts := range p.rtcpCh {
-		if pkts == nil {
-			p.params.Logger.Debugw("exiting publisher RTCP worker")
+	// read from rtcpChan, exit when done is closed
+	for {
+		select {
+		case pkts := <-p.rtcpCh:
+			if pkts == nil {
+				p.params.Logger.Debugw("exiting publisher RTCP worker")
+				return
+			}
+			if err := p.TransportManager.WritePublisherRTCP(pkts); err != nil {
+				p.params.Logger.Errorw("could not write RTCP to participant", err)
+			}
+		case <-p.done:
 			return
-		}
-
-		if err := p.TransportManager.WritePublisherRTCP(pkts); err != nil {
-			p.params.Logger.Errorw("could not write RTCP to participant", err)
 		}
 	}
 }

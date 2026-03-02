@@ -123,6 +123,9 @@ func (r *signalService) RelaySignal(stream psrpc.ServerStream[*rpc.RelaySignalRe
 
 	reqChan := routing.NewDefaultMessageChannel()
 	defer reqChan.Close()
+	reqChan.OnClose(func() {
+		cancel()
+	})
 
 	err = r.sessionHandler(
 		ctx,
@@ -140,14 +143,22 @@ func (r *signalService) RelaySignal(stream psrpc.ServerStream[*rpc.RelaySignalRe
 		l.Errorw("could not handle new participant", err)
 	}
 
-	for msg := range stream.Channel() {
-		if err = reqChan.WriteMessage(msg.Request); err != nil {
-			break
+	for {
+		select {
+		case msg, ok := <-stream.Channel():
+			if !ok {
+				l.Debugw("participant signal stream closed")
+				return
+			}
+			if err = reqChan.WriteMessage(msg.Request); err != nil {
+				l.Debugw("participant signal stream closing, reqChan write failed")
+				return
+			}
+		case <-ctx.Done():
+			l.Debugw("participant signal stream closing, context cancelled")
+			return
 		}
 	}
-
-	l.Debugw("participant signal stream closed")
-	return
 }
 
 type relaySignalResponseSink struct {
