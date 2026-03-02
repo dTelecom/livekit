@@ -58,6 +58,7 @@ type RelayedParticipantImpl struct {
 	connectedAt time.Time
 
 	rtcpCh chan []rtcp.Packet
+	done   chan struct{}
 
 	twcc *twcc.Responder
 
@@ -94,6 +95,7 @@ func NewRelayedParticipant(params RelayedParticipantParams) (*RelayedParticipant
 	p := &RelayedParticipantImpl{
 		params: params,
 		rtcpCh: make(chan []rtcp.Packet, 100),
+		done:   make(chan struct{}),
 		grants: &auth.ClaimGrants{
 			Identity: string(params.Identity),
 			Name:     string(params.Name),
@@ -259,6 +261,9 @@ func (p *RelayedParticipantImpl) Close(sendLeave bool, reason types.ParticipantC
 	p.supervisor.Stop()
 
 	p.UpTrackManager.Close(!sendLeave)
+
+	// signal publisherRTCPWorker to exit (don't close rtcpCh directly — writers may race)
+	close(p.done)
 
 	p.UpdateState(livekit.ParticipantInfo_DISCONNECTED)
 
@@ -868,15 +873,19 @@ func (p *RelayedParticipantImpl) publisherRTCPWorker() {
 		}
 	}()
 
-	// read from rtcpChan
-	for pkts := range p.rtcpCh {
-		if pkts == nil {
-			p.params.Logger.Debugw("exiting publisher RTCP worker")
+	// read from rtcpChan, exit when done is closed
+	for {
+		select {
+		case pkts := <-p.rtcpCh:
+			if pkts == nil {
+				p.params.Logger.Debugw("exiting publisher RTCP worker")
+				return
+			}
+			if err := p.params.Relay.WriteRTCP(pkts); err != nil {
+				p.params.Logger.Errorw("could not write RTCP to participant", err)
+			}
+		case <-p.done:
 			return
-		}
-
-		if err := p.params.Relay.WriteRTCP(pkts); err != nil {
-			p.params.Logger.Errorw("could not write RTCP to participant", err)
 		}
 	}
 }
