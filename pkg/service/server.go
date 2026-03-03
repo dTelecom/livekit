@@ -296,6 +296,7 @@ func (s *LivekitServer) Start() error {
 		}()
 
 		// Start reverse proxy listeners (share port 443 via SNI)
+		// Uses httputil.ReverseProxy with tls.NewListener for WebSocket support
 		for _, entry := range s.config.ReverseProxy {
 			proxyEntry := entry
 			proxyListener, err := s.TLSMuxer.Listen(proxyEntry.Domain)
@@ -305,19 +306,11 @@ func (s *LivekitServer) Start() error {
 				continue
 			}
 
-			proxyServer := &http.Server{
-				TLSConfig: &tls.Config{
-					GetCertificate: s.certManager.GetCertificate,
-				},
-				Handler: newReverseProxyHandler(proxyEntry.Target),
+			tlsConfig := &tls.Config{
+				GetCertificate: s.certManager.GetCertificate,
 			}
 
-			go func() {
-				if err := proxyServer.ServeTLS(proxyListener, "", ""); err != nil && err != http.ErrServerClosed {
-					logger.Errorw("reverse proxy server error", err,
-						"domain", proxyEntry.Domain)
-				}
-			}()
+			go startReverseProxy(proxyListener, proxyEntry.Target, proxyEntry.Domain, tlsConfig)
 
 			logger.Infow("reverse proxy started",
 				"domain", proxyEntry.Domain,
