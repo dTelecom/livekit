@@ -438,7 +438,7 @@ func (r *Room) Join(participant types.LocalParticipant, requestSource routing.Me
 
 func (r *Room) ReplaceParticipantRequestSource(identity livekit.ParticipantIdentity, reqSource routing.MessageSource) {
 	r.lock.Lock()
-	if rs, ok := r.participantRequestSources[identity]; ok {
+	if rs, ok := r.participantRequestSources[identity]; ok && rs != nil {
 		rs.Close()
 	}
 	r.participantRequestSources[identity] = reqSource
