@@ -295,7 +295,7 @@ func (r *RoomManager) StartSession(
 	if participant != nil {
 		// When reconnecting, it means WS has interrupted by underlying peer connection is still ok
 		// in this mode, we'll keep the participant SID, and just swap the sink for the underlying connection
-		if pi.Reconnect {
+		if _, isRelayed := participant.(*rtc.RelayedParticipantImpl); pi.Reconnect && !isRelayed {
 			logger.Infow("Resuming RTC session",
 				"room", roomKey,
 				"nodeID", r.currentNode.Id,
