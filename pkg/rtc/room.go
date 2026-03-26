@@ -467,7 +467,14 @@ func (r *Room) ResumeParticipant(p types.LocalParticipant, requestSource routing
 		return err
 	}
 
-	updates := ToProtoParticipants(r.GetParticipants())
+	// filter out hidden participants and the participant itself (matches createJoinResponseLocked behavior)
+	allParticipants := r.GetParticipants()
+	updates := make([]*livekit.ParticipantInfo, 0, len(allParticipants))
+	for _, op := range allParticipants {
+		if op.ID() != p.ID() && !op.Hidden() {
+			updates = append(updates, op.ToProto())
+		}
+	}
 	if err := p.SendParticipantUpdate(updates); err != nil {
 		return err
 	}
