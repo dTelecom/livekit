@@ -321,6 +321,10 @@ func (p *RelayedParticipantImpl) IsDisconnected() bool {
 	return false
 }
 
+func (p *RelayedParticipantImpl) IsTransportFailed() bool {
+	return false
+}
+
 func (p *RelayedParticipantImpl) IsIdle() bool {
 	// TODO implement me
 	return false

@@ -347,6 +347,16 @@ type FakeLocalParticipant struct {
 	isDisconnectedReturnsOnCall map[int]struct {
 		result1 bool
 	}
+	IsTransportFailedStub        func() bool
+	isTransportFailedMutex       sync.RWMutex
+	isTransportFailedArgsForCall []struct {
+	}
+	isTransportFailedReturns struct {
+		result1 bool
+	}
+	isTransportFailedReturnsOnCall map[int]struct {
+		result1 bool
+	}
 	IsIdleStub        func() bool
 	isIdleMutex       sync.RWMutex
 	isIdleArgsForCall []struct {
@@ -2542,6 +2552,59 @@ func (fake *FakeLocalParticipant) IsDisconnectedReturnsOnCall(i int, result1 boo
 		})
 	}
 	fake.isDisconnectedReturnsOnCall[i] = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) IsTransportFailed() bool {
+	fake.isTransportFailedMutex.Lock()
+	ret, specificReturn := fake.isTransportFailedReturnsOnCall[len(fake.isTransportFailedArgsForCall)]
+	fake.isTransportFailedArgsForCall = append(fake.isTransportFailedArgsForCall, struct {
+	}{})
+	stub := fake.IsTransportFailedStub
+	fakeReturns := fake.isTransportFailedReturns
+	fake.recordInvocation("IsTransportFailed", []interface{}{})
+	fake.isTransportFailedMutex.Unlock()
+	if stub != nil {
+		return stub()
+	}
+	if specificReturn {
+		return ret.result1
+	}
+	return fakeReturns.result1
+}
+
+func (fake *FakeLocalParticipant) IsTransportFailedCallCount() int {
+	fake.isTransportFailedMutex.RLock()
+	defer fake.isTransportFailedMutex.RUnlock()
+	return len(fake.isTransportFailedArgsForCall)
+}
+
+func (fake *FakeLocalParticipant) IsTransportFailedCalls(stub func() bool) {
+	fake.isTransportFailedMutex.Lock()
+	defer fake.isTransportFailedMutex.Unlock()
+	fake.IsTransportFailedStub = stub
+}
+
+func (fake *FakeLocalParticipant) IsTransportFailedReturns(result1 bool) {
+	fake.isTransportFailedMutex.Lock()
+	defer fake.isTransportFailedMutex.Unlock()
+	fake.IsTransportFailedStub = nil
+	fake.isTransportFailedReturns = struct {
+		result1 bool
+	}{result1}
+}
+
+func (fake *FakeLocalParticipant) IsTransportFailedReturnsOnCall(i int, result1 bool) {
+	fake.isTransportFailedMutex.Lock()
+	defer fake.isTransportFailedMutex.Unlock()
+	fake.IsTransportFailedStub = nil
+	if fake.isTransportFailedReturnsOnCall == nil {
+		fake.isTransportFailedReturnsOnCall = make(map[int]struct {
+			result1 bool
+		})
+	}
+	fake.isTransportFailedReturnsOnCall[i] = struct {
 		result1 bool
 	}{result1}
 }
@@ -5279,6 +5342,8 @@ func (fake *FakeLocalParticipant) Invocations() map[string][][]interface{} {
 	defer fake.isClosedMutex.RUnlock()
 	fake.isDisconnectedMutex.RLock()
 	defer fake.isDisconnectedMutex.RUnlock()
+	fake.isTransportFailedMutex.RLock()
+	defer fake.isTransportFailedMutex.RUnlock()
 	fake.isIdleMutex.RLock()
 	defer fake.isIdleMutex.RUnlock()
 	fake.isPublisherMutex.RLock()

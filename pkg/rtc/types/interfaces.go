@@ -239,6 +239,7 @@ type LocalParticipant interface {
 	IsClosed() bool
 	IsReady() bool
 	IsDisconnected() bool
+	IsTransportFailed() bool
 	IsIdle() bool
 	SubscriberAsPrimary() bool
 	GetClientConfiguration() *livekit.ClientConfiguration

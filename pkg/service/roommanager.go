@@ -1357,8 +1357,18 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 			})
 			logger.Infow("Remote participant joined", "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID())
 		} else if _, ok := participant.(*rtc.RelayedParticipantImpl); !ok {
-			logger.Errorw("Non-relayed participant is already joined", nil, "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(), "sid", pi.Sid, "new sid", participant.ID())
-			return
+			if participant.IsTransportFailed() {
+				logger.Infow("Replacing stale local participant with relayed participant",
+					"identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(),
+					"old sid", participant.ID(), "new sid", pi.Sid)
+				room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonDuplicateIdentity)
+				participant = nil
+			} else {
+				logger.Warnw("Non-relayed participant is already joined (transport active, ignoring relay)",
+					nil, "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(),
+					"local sid", participant.ID(), "relay sid", pi.Sid)
+				return
+			}
 		}
 		relayedParticipant := participant.(*rtc.RelayedParticipantImpl)
 		relayedParticipant.SetName(pi.Name)

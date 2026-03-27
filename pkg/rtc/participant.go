@@ -1370,6 +1370,12 @@ func (p *ParticipantImpl) setupDisconnectTimer() {
 	p.lock.Unlock()
 }
 
+func (p *ParticipantImpl) IsTransportFailed() bool {
+	p.lock.RLock()
+	defer p.lock.RUnlock()
+	return p.disconnectTimer != nil
+}
+
 func (p *ParticipantImpl) onAnyTransportFailed() {
 	// clients support resuming of connections when websocket becomes disconnected
 	p.CloseSignalConnection()
