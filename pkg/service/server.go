@@ -278,6 +278,11 @@ func (s *LivekitServer) Start() error {
 	}
 
 	if s.config.Domain != "" {
+		// Drain TLSMuxer errors to prevent blocking the accept loop.
+		// The muxer uses an unbuffered error channel — if errors are not consumed,
+		// sendError blocks and can freeze the entire muxer including run().
+		go s.TLSMuxer.HandleErrors()
+
 		tlsListener, err := s.TLSMuxer.Listen(s.config.Domain)
 		if err != nil {
 			logger.Errorw("could not start server", err)
