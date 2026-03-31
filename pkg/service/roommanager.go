@@ -1309,6 +1309,18 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 					room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonStateDisconnected)
 					participant = nil
 				}
+			} else if pi.JoinedAt > participant.ConnectedAt().Unix() {
+				logger.Infow("Replacing local participant with relayed participant (reconnected to another server)",
+					"identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(),
+					"old sid", participant.ID(), "new sid", pi.Sid)
+				room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonDuplicateIdentity)
+				participant = nil
+			} else {
+				logger.Debugw("Ignoring stale relay for local participant",
+					"identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(),
+					"local sid", participant.ID(), "relay sid", pi.Sid,
+					"localJoinedAt", participant.ConnectedAt().Unix(), "relayJoinedAt", pi.JoinedAt)
+				return
 			}
 		}
 		if participant == nil {
@@ -1356,20 +1368,6 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 				r.telemetry.ParticipantLeft(context.TODO(), room.ToProto(), p.ToProto(), true, p.ClaimGrants().WebHookURL)
 			})
 			logger.Infow("Remote participant joined", "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID())
-		} else if _, ok := participant.(*rtc.RelayedParticipantImpl); !ok {
-			if pi.JoinedAt > participant.ConnectedAt().Unix() {
-				logger.Infow("Replacing local participant with relayed participant (reconnected to another server)",
-					"identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(),
-					"old sid", participant.ID(), "new sid", pi.Sid)
-				room.RemoveParticipant(participantIdentity, participant.ID(), types.ParticipantCloseReasonDuplicateIdentity)
-				participant = nil
-			} else {
-				logger.Debugw("Ignoring stale relay for local participant",
-					"identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID(),
-					"local sid", participant.ID(), "relay sid", pi.Sid,
-					"localJoinedAt", participant.ConnectedAt().Unix(), "relayJoinedAt", pi.JoinedAt)
-				return
-			}
 		}
 		relayedParticipant := participant.(*rtc.RelayedParticipantImpl)
 		relayedParticipant.SetName(pi.Name)
