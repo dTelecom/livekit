@@ -49,6 +49,7 @@ type TransportManagerParams struct {
 	AllowTCPFallback        bool
 	TCPFallbackRTTThreshold int
 	TURNSEnabled            bool
+	PreferTLSOnFirstFailure bool
 	Logger                  logger.Logger
 }
 
@@ -579,6 +580,19 @@ func (t *TransportManager) handleConnectionFailed(isShortLived bool) {
 	// As both transports are switched to the same type on any failure, checking just subscriber should be fine.
 	//
 	getNext := func(ic *livekit.ICEConfig) livekit.ICECandidateType {
+		// when configured, jump straight to TLS on the first failure if TURN/TLS is
+		// available, skipping the plain-TCP step. Falls back to TCP if TLS is not
+		// configured, then to allowing all transports.
+		if t.params.PreferTLSOnFirstFailure && t.params.TURNSEnabled {
+			if ic.PreferenceSubscriber == livekit.ICECandidateType_ICT_NONE {
+				return livekit.ICECandidateType_ICT_TLS
+			}
+			if ic.PreferenceSubscriber == livekit.ICECandidateType_ICT_TLS && t.params.ClientInfo.SupportsICETCP() && t.canUseICETCP() {
+				return livekit.ICECandidateType_ICT_TCP
+			}
+			return livekit.ICECandidateType_ICT_NONE
+		}
+
 		if ic.PreferenceSubscriber == livekit.ICECandidateType_ICT_NONE && t.params.ClientInfo.SupportsICETCP() && t.canUseICETCP() {
 			return livekit.ICECandidateType_ICT_TCP
 		} else if ic.PreferenceSubscriber != livekit.ICECandidateType_ICT_TLS && t.params.TURNSEnabled {

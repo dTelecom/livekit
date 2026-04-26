@@ -128,6 +128,12 @@ type RTCConfig struct {
 	// allow TCP and TURN/TLS fallback
 	AllowTCPFallback *bool `yaml:"allow_tcp_fallback,omitempty"`
 
+	// when a short-lived connection is detected, prefer TURN/TLS on the first
+	// failure instead of stepping through plain TCP first. Requires TURN/TLS
+	// to be configured. Useful for clients on networks where outbound TCP to
+	// the LiveKit ICE/TCP port is blocked but 443/TLS is allowed.
+	PreferTLSOnFirstFailure *bool `yaml:"prefer_tls_on_first_failure,omitempty"`
+
 	// for testing, disable UDP
 	ForceTCP bool `yaml:"force_tcp,omitempty"`
 

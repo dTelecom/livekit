@@ -355,6 +355,10 @@ func (r *RoomManager) StartSession(
 	if r.config.RTC.AllowTCPFallback != nil {
 		allowFallback = *r.config.RTC.AllowTCPFallback
 	}
+	preferTLSOnFirstFailure := false
+	if r.config.RTC.PreferTLSOnFirstFailure != nil {
+		preferTLSOnFirstFailure = *r.config.RTC.PreferTLSOnFirstFailure
+	}
 	// default do not force full reconnect on a publication error
 	reconnectOnPublicationError := false
 	if r.config.RTC.ReconnectOnPublicationError != nil {
@@ -389,6 +393,7 @@ func (r *RoomManager) StartSession(
 		AdaptiveStream:          pi.AdaptiveStream,
 		AllowTCPFallback:        allowFallback,
 		TURNSEnabled:            r.config.IsTURNSEnabled(),
+		PreferTLSOnFirstFailure: preferTLSOnFirstFailure,
 		GetParticipantInfo: func(pID livekit.ParticipantID) *livekit.ParticipantInfo {
 			if p := room.GetParticipantByID(pID); p != nil {
 				return p.ToProto()
