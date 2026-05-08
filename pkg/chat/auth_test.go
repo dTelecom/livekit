@@ -28,10 +28,9 @@ func (f fakeLookup) ClientByAddress(_ context.Context, address string) (LookupRe
 	return LookupResult{Key: f.knownKey}, nil
 }
 
-// signTestChat is a small helper that mints a chat-token JWT signed by the
-// given Ed25519 private key, with the supplied claims. Mirrors the
-// chat-wire-contract.md §1 shape; bypasses the protocol/auth library since
-// that struct (ClaimGrants) has no chat-specific fields.
+// signTestChat mints a chat-token JWT signed by the given Ed25519 private
+// key with the supplied claims. Bypasses protocol/auth.AccessToken because
+// its ClaimGrants struct has no chat-specific fields.
 func signTestChat(t *testing.T, priv ed25519.PrivateKey, c ChatClaims) string {
 	t.Helper()
 	sig, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.EdDSA, Key: priv},

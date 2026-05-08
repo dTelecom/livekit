@@ -88,7 +88,7 @@ type P2PConfig struct {
 	DatabaseName   string `yaml:"database_name"`
 }
 
-// ChatConfig controls the secure-chat live-mesh layer (pkg/chat).
+// ChatConfig controls the chat live-mesh layer (pkg/chat).
 type ChatConfig struct {
 	// When false, /chat/ws returns 404 and no chat goroutines run.
 	// Default-on (set to true in NewConfig defaults).

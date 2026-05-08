@@ -1,6 +1,8 @@
-// Package chat implements the dTelecom secure-chat live-mesh layer.
-// Stateless. No durable storage on the node — all persistence lives in the
-// tenant backend (e.g. an in-memory mock during integration tests).
+// Package chat implements a stateless live-mesh layer for E2E-encrypted 1:1
+// chat. The node routes opaque ciphertext envelopes between currently-connected
+// (user, device) WebSockets via gossipsub; offline fallback is delegated to a
+// tenant backend referenced by each chat token's webhook URL claim. No durable
+// storage on the node.
 package chat
 
 import (

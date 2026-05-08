@@ -31,9 +31,8 @@ type LookupResult struct {
 	Key string // base58-encoded Ed25519 public key
 }
 
-// ChatClaims is the body of a chat-token JWT (see chat-wire-contract.md §1).
-// Verified cryptographically against the issuer's wallet pubkey from the
-// Solana client registry.
+// ChatClaims is the body of a chat-token JWT. Verified cryptographically
+// against the issuer's wallet pubkey from the Solana client registry.
 type ChatClaims struct {
 	Type           string `json:"typ"`              // must be "chat"
 	Issuer         string `json:"iss"`              // base58 tenant pubkey
@@ -41,9 +40,9 @@ type ChatClaims struct {
 	DeviceID       string `json:"did"`              // device id (UUID)
 	IssuedAt       int64  `json:"iat"`
 	Expiry         int64  `json:"exp"`
-	WebhookURL     string `json:"chat_webhook_url"` // where node POSTs offline-fallback envelopes
-	ChatSend       bool   `json:"chat_send"`
-	ChatReceive    bool   `json:"chat_receive"`
+	WebhookURL     string `json:"chatWebhookUrl"` // where node POSTs offline-fallback envelopes
+	ChatSend       bool   `json:"chatSend"`
+	ChatReceive    bool   `json:"chatReceive"`
 }
 
 // chatClaimsKey is the unexported context key for stashing verified claims.
@@ -126,7 +125,7 @@ func VerifyChatToken(
 		return nil, errors.New("missing did claim")
 	}
 	if claims.WebhookURL == "" {
-		return nil, errors.New("missing chat_webhook_url claim")
+		return nil, errors.New("missing chatWebhookUrl claim")
 	}
 	if claims.Expiry == 0 || now >= claims.Expiry {
 		return nil, errors.New("token expired")

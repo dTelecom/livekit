@@ -58,17 +58,17 @@ func (s *Service) Handler() http.Handler {
 	return ChatTokenMiddleware(http.HandlerFunc(s.serveWS), s.lookup)
 }
 
-// ── frame shapes (chat-wire-contract.md §3) ─────────────────────────────────
+// ── frame shapes ────────────────────────────────────────────────────────────
 
 type frameKind string
 
 const (
-	kindSend       frameKind = "chat_send"
-	kindAck        frameKind = "chat_ack"  // reserved; unused in v1 (ack flows over HTTP)
-	kindPing       frameKind = "chat_ping"
-	kindEnvelope   frameKind = "chat_envelope"
-	kindSendResult frameKind = "chat_send_result"
-	kindPong       frameKind = "chat_pong"
+	kindSend       frameKind = "chatSend"
+	kindAck        frameKind = "chatAck"  // reserved; unused in v1 (ack flows over HTTP)
+	kindPing       frameKind = "chatPing"
+	kindEnvelope   frameKind = "chatEnvelope"
+	kindSendResult frameKind = "chatSendResult"
+	kindPong       frameKind = "chatPong"
 )
 
 type frameEnvelope struct {
@@ -77,9 +77,9 @@ type frameEnvelope struct {
 
 type chatSendIn struct {
 	Kind      frameKind    `json:"kind"`
-	ToUserID  string       `json:"to_user_id"`
+	ToUserID  string       `json:"toUserId"`
 	Ephemeral bool         `json:"ephemeral,omitempty"`
-	MsgType   string       `json:"msg_type,omitempty"` // optional; default "normal"
+	MsgType   string       `json:"msgType,omitempty"` // optional; default "normal"
 	Targets   []SendTarget `json:"targets"`
 }
 
@@ -89,11 +89,11 @@ type chatSendIn struct {
 
 type chatEnvelopeOut struct {
 	Kind           frameKind `json:"kind"`
-	EnvelopeUUID   string    `json:"envelope_uuid"`
-	SenderUserID   string    `json:"sender_user_id"`
-	SenderDeviceID string    `json:"sender_device_id"`
+	EnvelopeUUID   string    `json:"envelopeUuid"`
+	SenderUserID   string    `json:"senderUserId"`
+	SenderDeviceID string    `json:"senderDeviceId"`
 	Ciphertext     string    `json:"ciphertext"`
-	MsgType        string    `json:"msg_type"`
+	MsgType        string    `json:"msgType"`
 }
 
 type chatSendResultOut struct {
@@ -138,41 +138,52 @@ func (s *Service) serveWS(w http.ResponseWriter, r *http.Request) {
 	deviceID := claims.DeviceID
 	webhookURL := claims.WebhookURL
 
-	// Inbound envelopes from gossipsub → forward to WS, then ACK on the per-envelope
-	// ack topic so the sender's node can mark this delivery as live.
+	// Inbound mesh messages on this device's envelope topic. The kind
+	// discriminator routes to one of three paths:
+	//   envelope        → write to WS, ACK back to sender
+	//   ack             → wake the SendOne goroutine waiting on this envelopeUuid
+	//   presenceReply   → wake the QueryAnyLive goroutine waiting on this queryId
 	onEnvelope := func(payload []byte) {
-		var p envelopePayload
-		if err := json.Unmarshal(payload, &p); err != nil {
-			s.log.Debugw("chat ws: bad envelope payload", "err", err)
+		var m meshMessage
+		if err := json.Unmarshal(payload, &m); err != nil {
+			s.log.Debugw("chat ws: bad mesh payload", "err", err)
 			return
 		}
-		out := chatEnvelopeOut{
-			Kind:           kindEnvelope,
-			EnvelopeUUID:   p.EnvelopeUUID,
-			SenderUserID:   p.SenderUserID,
-			SenderDeviceID: p.SenderDeviceID,
-			Ciphertext:     p.Ciphertext,
-			MsgType:        p.MsgType,
+		switch m.Kind {
+		case MeshKindEnvelope:
+			out := chatEnvelopeOut{
+				Kind:           kindEnvelope,
+				EnvelopeUUID:   m.EnvelopeUUID,
+				SenderUserID:   m.SenderUserID,
+				SenderDeviceID: m.SenderDeviceID,
+				Ciphertext:     m.Ciphertext,
+				MsgType:        m.MsgType,
+			}
+			if err := wc.writeJSON(out); err != nil {
+				s.log.Debugw("chat ws: write envelope failed", "err", err)
+				return
+			}
+			// ACK back on the SENDER's envelope topic so their existing
+			// subscription receives it. No per-envelope topic.
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			s.disp.PublishAck(ctx, apiKey, m.SenderUserID, m.SenderDeviceID, m.EnvelopeUUID)
+		case MeshKindAck:
+			s.disp.SignalAck(m.EnvelopeUUID)
+		case MeshKindPresenceReply:
+			s.presence.SignalQueryReply(m.QueryID)
+		default:
+			s.log.Debugw("chat ws: unknown mesh kind", "kind", m.Kind)
 		}
-		if err := wc.writeJSON(out); err != nil {
-			s.log.Debugw("chat ws: write envelope failed", "err", err)
-			return
-		}
-		// Best-effort ACK back to sender (own node also sees this, but harmless).
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		s.disp.PublishAck(ctx, p.EnvelopeUUID)
 	}
 
-	if err := s.presence.RegisterDevice(r.Context(), apiKey, userID, deviceID, onEnvelope); err != nil {
+	if err := s.presence.RegisterDevice(apiKey, userID, deviceID, onEnvelope); err != nil {
 		s.log.Errorw("chat ws: register device failed", err, "user", userID, "device", deviceID)
 		_ = conn.Close()
 		return
 	}
 	defer func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.presence.UnregisterDevice(ctx, apiKey, userID, deviceID)
+		s.presence.UnregisterDevice(apiKey, userID, deviceID)
 		_ = conn.Close()
 	}()
 
@@ -202,7 +213,7 @@ func (s *Service) handleFrame(ctx context.Context, wc *wsConn, claims *ChatClaim
 	case kindSend:
 		var req chatSendIn
 		if err := json.Unmarshal(raw, &req); err != nil {
-			s.log.Debugw("chat ws: bad chat_send", "err", err)
+			s.log.Debugw("chat ws: bad chatSend", "err", err)
 			return
 		}
 		if err := s.validateSend(&req); err != nil {
@@ -237,7 +248,7 @@ func (s *Service) handleFrame(ctx context.Context, wc *wsConn, claims *ChatClaim
 
 func (s *Service) validateSend(req *chatSendIn) error {
 	if req.ToUserID == "" {
-		return errors.New("to_user_id required")
+		return errors.New("toUserId required")
 	}
 	if len(req.Targets) == 0 {
 		return errors.New("targets must be non-empty")
@@ -251,10 +262,10 @@ func (s *Service) validateSend(req *chatSendIn) error {
 	}
 	for _, t := range req.Targets {
 		if t.DeviceID == "" {
-			return errors.New("target.device_id required")
+			return errors.New("target.deviceId required")
 		}
 		if t.EnvelopeUUID == "" {
-			return errors.New("target.envelope_uuid required")
+			return errors.New("target.envelopeUuid required")
 		}
 		if t.Ciphertext == "" {
 			return errors.New("target.ciphertext required")
@@ -266,7 +277,7 @@ func (s *Service) validateSend(req *chatSendIn) error {
 		}
 	}
 	if req.MsgType != "" && req.MsgType != "prekey" && req.MsgType != "normal" {
-		return fmt.Errorf("invalid msg_type: %q", req.MsgType)
+		return fmt.Errorf("invalid msgType: %q", req.MsgType)
 	}
 	return nil
 }
