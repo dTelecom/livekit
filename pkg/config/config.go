@@ -65,6 +65,7 @@ type Config struct {
 	Solana         SolanaConfig             `yaml:"solana"`
 	P2P            P2PConfig                `yaml:"p2p"`
 	Domain         string                   `yaml:"domain,omitempty"`
+	ReverseProxy   []ReverseProxyEntry      `yaml:"reverse_proxy,omitempty"`
 	// LogLevel is deprecated
 	LogLevel string        `yaml:"log_level,omitempty"`
 	Logging  LoggingConfig `yaml:"logging,omitempty"`
@@ -284,6 +285,11 @@ type RegionConfig struct {
 type LimitConfig struct {
 	NumTracks   int32   `yaml:"num_tracks"`
 	BytesPerSec float32 `yaml:"bytes_per_sec"`
+}
+
+type ReverseProxyEntry struct {
+	Domain string `yaml:"domain"`
+	Target string `yaml:"target"` // e.g. "localhost:8765"
 }
 
 type EgressConfig struct {

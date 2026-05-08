@@ -43,9 +43,15 @@ func NewCertManager(conf *config.Config) (*autocert.Manager, error) {
 	}
 
 	if conf.Domain != "" && conf.TURN.Domain != "" {
+		// Collect all domains that need certs: main + TURN + reverse proxy
+		hosts := []string{conf.Domain, conf.TURN.Domain}
+		for _, entry := range conf.ReverseProxy {
+			hosts = append(hosts, entry.Domain)
+		}
+
 		certManager := autocert.Manager{
 			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(conf.Domain, conf.TURN.Domain),
+			HostPolicy: autocert.HostWhitelist(hosts...),
 		}
 
 		dir := cacheDir()

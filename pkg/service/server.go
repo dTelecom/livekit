@@ -56,6 +56,7 @@ type LivekitServer struct {
 	doneChan       chan struct{}
 	closedChan     chan struct{}
 	TLSMuxer       *vhost.TLSMuxer
+	certManager    *autocert.Manager
 	roomAllocator  RoomAllocator
 }
 
@@ -92,6 +93,7 @@ func NewLivekitServer(conf *config.Config,
 		nodeProvider:   nodeProvider,
 		closedChan:     make(chan struct{}),
 		TLSMuxer:       TLSMuxer,
+		certManager:    certManager,
 	}
 
 	whipHandler := NewWhipHandler(clientProvider, conf)
@@ -297,6 +299,28 @@ func (s *LivekitServer) Start() error {
 				s.Stop(true)
 			}
 		}()
+
+		// Start reverse proxy listeners (share port 443 via SNI)
+		// Uses httputil.ReverseProxy with tls.NewListener for WebSocket support
+		for _, entry := range s.config.ReverseProxy {
+			proxyEntry := entry
+			proxyListener, err := s.TLSMuxer.Listen(proxyEntry.Domain)
+			if err != nil {
+				logger.Errorw("could not listen for reverse proxy domain", err,
+					"domain", proxyEntry.Domain)
+				continue
+			}
+
+			tlsConfig := &tls.Config{
+				GetCertificate: s.certManager.GetCertificate,
+			}
+
+			go startReverseProxy(proxyListener, proxyEntry.Target, proxyEntry.Domain, tlsConfig)
+
+			logger.Infow("reverse proxy started",
+				"domain", proxyEntry.Domain,
+				"target", proxyEntry.Target)
+		}
 	} else {
 		httpGroup := &errgroup.Group{}
 		for _, ln := range listeners {
