@@ -92,6 +92,12 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 	ingressStore := getIngressStore(objectStore)
 	ingressService := NewIngressService(ingressConfig, nodeID, messageBus, ingressClient, ingressStore, roomService, telemetryService)
 	rtcService := NewRTCService(conf, roomAllocator, objectStore, router, currentNode, telemetryService)
+	chatConfig := getChatConfig(conf)
+	presenceTracker := createPresenceTracker(db, chatConfig)
+	dispatcher := createDispatcher(db, presenceTracker, notifier, chatConfig)
+	clientProvider := createClientProvider(conf)
+	clientLookup := createChatLookup(clientProvider)
+	service := createChatService(chatConfig, presenceTracker, dispatcher, clientLookup)
 	keyProviderPublicKey, err := createKeyPublicKeyProvider(conf)
 	if err != nil {
 		return nil, err
@@ -120,7 +126,6 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 	if err != nil {
 		return nil, err
 	}
-	clientProvider := createClientProvider(conf)
 	reader, err := createGeoIP()
 	if err != nil {
 		return nil, err
@@ -128,7 +133,7 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 	nodeProvider := createNodeProvider(reader, currentNode, db)
 	relevantNodesHandler := createRelevantNodesHandler(nodeProvider)
 	mainDebugHandler := createMainDebugHandler(nodeProvider, clientProvider, db, roomManager)
-	livekitServer, err := NewLivekitServer(conf, roomService, egressService, ingressService, roomAllocator, rtcService, keyProviderPublicKey, router, roomManager, signalServer, server, currentNode, clientProvider, nodeProvider, relevantNodesHandler, mainDebugHandler, tlsMuxer, manager)
+	livekitServer, err := NewLivekitServer(conf, roomService, egressService, ingressService, roomAllocator, rtcService, service, keyProviderPublicKey, router, roomManager, signalServer, server, currentNode, clientProvider, nodeProvider, relevantNodesHandler, mainDebugHandler, tlsMuxer, manager)
 	if err != nil {
 		return nil, err
 	}

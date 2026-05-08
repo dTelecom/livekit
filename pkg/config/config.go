@@ -64,6 +64,7 @@ type Config struct {
 	SignalRelay    SignalRelayConfig        `yaml:"signal_relay,omitempty"`
 	Solana         SolanaConfig             `yaml:"solana"`
 	P2P            P2PConfig                `yaml:"p2p"`
+	Chat           ChatConfig               `yaml:"chat,omitempty"`
 	Domain         string                   `yaml:"domain,omitempty"`
 	ReverseProxy   []ReverseProxyEntry      `yaml:"reverse_proxy,omitempty"`
 	// LogLevel is deprecated
@@ -85,6 +86,27 @@ type SolanaConfig struct {
 type P2PConfig struct {
 	PeerListenPort int    `yaml:"peer_listen_port"`
 	DatabaseName   string `yaml:"database_name"`
+}
+
+// ChatConfig controls the secure-chat live-mesh layer (pkg/chat).
+type ChatConfig struct {
+	// When false, /chat/ws returns 404 and no chat goroutines run.
+	// Default-on (set to true in NewConfig defaults).
+	Enabled bool `yaml:"enabled"`
+
+	// Per-target fallback decision deadline. After this long with no live-delivery
+	// ACK on the envelope topic, the target is treated as offline.
+	FallbackTimeout time.Duration `yaml:"fallback_timeout,omitempty"`
+
+	// How long to aggregate replies on the user-presence-query topic before
+	// concluding the user has no live device anywhere on the mesh.
+	UserPresenceQueryTimeout time.Duration `yaml:"user_presence_query_timeout,omitempty"`
+
+	// Hard byte cap per target ciphertext on the wire.
+	MaxEnvelopeBytes int `yaml:"max_envelope_bytes,omitempty"`
+
+	// Hard cap on `targets` array length per ChatSend frame.
+	MaxTargetsPerSend int `yaml:"max_targets_per_send,omitempty"`
 }
 
 type RelayConfig struct {
@@ -468,6 +490,13 @@ func NewConfig(confString string, strictMode bool, c *cli.Context, baseFlags []c
 			StreamBufferSize: 1000,
 		},
 		Keys: map[string]string{},
+		Chat: ChatConfig{
+			Enabled:                  true,
+			FallbackTimeout:          2 * time.Second,
+			UserPresenceQueryTimeout: 500 * time.Millisecond,
+			MaxEnvelopeBytes:         65536,
+			MaxTargetsPerSend:        8,
+		},
 	}
 
 	if confString != "" {

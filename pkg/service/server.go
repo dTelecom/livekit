@@ -28,6 +28,7 @@ import (
 	"github.com/livekit/protocol/logger"
 
 	"github.com/inconshreveable/go-vhost"
+	"github.com/livekit/livekit-server/pkg/chat"
 	"github.com/livekit/livekit-server/pkg/config"
 	"github.com/livekit/livekit-server/pkg/routing"
 	"github.com/livekit/livekit-server/version"
@@ -40,6 +41,7 @@ const (
 type LivekitServer struct {
 	config         *config.Config
 	rtcService     *RTCService
+	chatService    *chat.Service
 	httpServer     *http.Server
 	httpsServer    *http.Server
 	promServer     *http.Server
@@ -66,6 +68,7 @@ func NewLivekitServer(conf *config.Config,
 	ingressService *IngressService,
 	roomAllocator RoomAllocator,
 	rtcService *RTCService,
+	chatService *chat.Service,
 	keyProvider auth.KeyProviderPublicKey,
 	router routing.Router,
 	roomManager *RoomManager,
@@ -82,6 +85,7 @@ func NewLivekitServer(conf *config.Config,
 	s = &LivekitServer{
 		config:        conf,
 		rtcService:    rtcService,
+		chatService:   chatService,
 		router:        router,
 		roomManager:   roomManager,
 		signalServer:  signalServer,
@@ -140,6 +144,7 @@ func NewLivekitServer(conf *config.Config,
 	mux.Handle(ingressServer.PathPrefix(), ingressServer)
 	mux.Handle("/rtc", s.refuseIfShuttingDown(rtcService))
 	mux.HandleFunc("/rtc/validate", rtcService.Validate)
+	mux.Handle("/chat/ws", s.refuseIfShuttingDown(chatService.Handler()))
 	mux.HandleFunc("/relevant", relevantNodesHandler.HTTPHandlerNode)
 	mux.HandleFunc("/relevants", relevantNodesHandler.HTTPHandlerNodes)
 	mux.HandleFunc("/node-debug", mainDebugHandler.nodeHTTPHandler)

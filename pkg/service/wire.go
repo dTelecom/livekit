@@ -79,6 +79,11 @@ func InitializeServer(conf *config.Config, currentNode routing.LocalNode) (*Live
 		createRelevantNodesHandler,
 		createMainDebugHandler,
 		createTrafficManager,
+		getChatConfig,
+		createChatLookup,
+		createPresenceTracker,
+		createDispatcher,
+		createChatService,
 		NewLivekitServer,
 	)
 	return &LivekitServer{}, nil
