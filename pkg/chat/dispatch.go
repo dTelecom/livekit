@@ -53,11 +53,12 @@ const (
 )
 
 // SendTarget is one entry of a ChatSend frame's targets[] (after WS-frame
-// parsing).
+// parsing). JSON tags MUST match chat-wire-contract.md §3 — the wire format
+// uses snake_case, so the unmarshal needs explicit tags.
 type SendTarget struct {
-	DeviceID     string
-	Ciphertext   string // base64-encoded; passed through opaque
-	EnvelopeUUID string
+	DeviceID     string `json:"device_id"`
+	Ciphertext   string `json:"ciphertext"` // base64-encoded; passed through opaque
+	EnvelopeUUID string `json:"envelope_uuid"`
 }
 
 // SendResult is per-target. Fed into a chat_send_result frame.
