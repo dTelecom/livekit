@@ -9,7 +9,6 @@ import (
 	"time"
 
 	p2p_common "github.com/dTelecom/p2p-database/common"
-	"github.com/dTelecom/p2p-database/pubsub"
 	"github.com/google/uuid"
 	"github.com/livekit/protocol/logger"
 )
@@ -17,7 +16,10 @@ import (
 // EnvelopeHandler is called when a meshMessage arrives for a locally hosted
 // device. The handler runs on a goroutine the caller (service.go) owns. It
 // receives the JSON-encoded meshMessage payload and dispatches by `kind`.
-type EnvelopeHandler func(payload []byte)
+// Returns an error if the live-WS write failed — used by DeliverLocal to
+// distinguish "no local subscriber" from "subscriber exists but write
+// failed," so the dispatcher can pick the right recovery path.
+type EnvelopeHandler func(payload []byte) error
 
 // PresenceTracker is the node-internal answer to two questions:
 //   1. "Do I host the live WS for (apiKey, userID, deviceID)?"
@@ -30,7 +32,7 @@ type EnvelopeHandler func(payload []byte)
 //
 // Steady-state idle generates zero presence traffic.
 type PresenceTracker struct {
-	db       *pubsub.DB
+	db       pubsubAPI
 	log      logger.Logger
 	queryTTL time.Duration
 
@@ -62,7 +64,9 @@ type presenceQueryMessage struct {
 }
 
 // NewPresenceTracker wires the tracker against the shared p2p pubsub DB.
-func NewPresenceTracker(db *pubsub.DB, defaultQueryTTL time.Duration) *PresenceTracker {
+// `db` accepts the pubsub.DB concrete type via the pubsubAPI interface
+// (tests inject in-memory fakes).
+func NewPresenceTracker(db pubsubAPI, defaultQueryTTL time.Duration) *PresenceTracker {
 	return &PresenceTracker{
 		db:              db,
 		log:             logger.GetLogger(),
@@ -160,26 +164,39 @@ func (p *PresenceTracker) UnregisterDevice(apiKey, userID, deviceID string) {
 }
 
 // DeliverLocal tries to deliver a meshMessage to a locally-hosted device by
-// invoking its EnvelopeHandler synchronously. Returns true if the device is
-// hosted on this node (and was therefore delivered). Skips gossipsub entirely
-// — same-node delivery via gossipsub doesn't work because the underlying
-// listener filters self-published messages.
-func (p *PresenceTracker) DeliverLocal(apiKey, userID, deviceID string, m meshMessage) bool {
+// invoking its EnvelopeHandler synchronously. Returns:
+//   - delivered: the device has a live local WS subscription.
+//   - writeOK: the WS write succeeded (only meaningful when delivered=true;
+//     false on marshal error or writeJSON error).
+//
+// The dispatcher uses the (delivered, writeOK) tuple to pick the recovery
+// path: (true,true) → wait for client ack; (true,false) → don't waste the
+// retry tick on a dead-but-not-yet-unregistered local WS, but still keep
+// trying (a reconnected WS may register before the next tick); (false,*) →
+// publish on gossipsub for cross-node delivery.
+//
+// Same-node delivery via gossipsub doesn't work because the underlying
+// listener filters self-published messages — that's why DeliverLocal is a
+// separate code path.
+func (p *PresenceTracker) DeliverLocal(apiKey, userID, deviceID string, m meshMessage) (delivered, writeOK bool) {
 	key := EncodeUserKey(apiKey, userID, deviceID)
 	p.mu.RLock()
 	dev, ok := p.localDevices[key]
 	p.mu.RUnlock()
 	if !ok {
-		return false
+		return false, false
 	}
 	payload, err := json.Marshal(m)
 	if err != nil {
 		p.log.Errorw("DeliverLocal: marshal meshMessage", err)
-		return false
+		return true, false
 	}
 	defer recoverHandler(p.log, "DeliverLocal")
-	dev.onEnv(payload)
-	return true
+	if err := dev.onEnv(payload); err != nil {
+		p.log.Debugw("DeliverLocal: onEnv reported error", "err", err, "user", userID, "device", deviceID)
+		return true, false
+	}
+	return true, true
 }
 
 // IsLocallyHosted reports whether this specific (apiKey, userID, deviceID)
@@ -284,7 +301,11 @@ func (p *PresenceTracker) makeEnvelopeHandler(dev *localDevice) func(p2p_common.
 			p.log.Errorw("envelope handler: marshal", err)
 			return
 		}
-		dev.onEnv(raw)
+		// Cross-node delivery: the writeJSON error is signaled to the sender
+		// via lack-of-ack on the inflight channel (not here). Log + drop.
+		if err := dev.onEnv(raw); err != nil {
+			p.log.Debugw("envelope handler: onEnv reported error", "err", err, "user", dev.userID, "device", dev.deviceID)
+		}
 	}
 }
 

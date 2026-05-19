@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/gorilla/websocket"
 	"github.com/livekit/protocol/logger"
@@ -63,13 +62,20 @@ func (s *Service) Handler() http.Handler {
 type frameKind string
 
 const (
-	kindSend       frameKind = "chatSend"
-	kindAck        frameKind = "chatAck"  // reserved; unused in v1 (ack flows over HTTP)
-	kindPing       frameKind = "chatPing"
-	kindEnvelope   frameKind = "chatEnvelope"
-	kindSendResult frameKind = "chatSendResult"
-	kindPong       frameKind = "chatPong"
+	kindSend         frameKind = "chatSend"
+	kindEnvelopeAck  frameKind = "chatEnvelopeAck"
+	kindPing         frameKind = "chatPing"
+	kindEnvelope     frameKind = "chatEnvelope"
+	kindSendResult   frameKind = "chatSendResult"
+	kindPong         frameKind = "chatPong"
 )
+
+// wsConnPendingCap bounds the per-wsConn pending-envelope set used for
+// chatEnvelopeAck anti-spoof. Bursty senders to a slow receiver could
+// otherwise grow the map without bound; on overflow the oldest entry is
+// evicted, which effectively forces a webhook fallback for that envelope
+// from the sender's POV (acceptable — the webhook is the durability layer).
+const wsConnPendingCap = 256
 
 type frameEnvelope struct {
 	Kind frameKind `json:"kind"`
@@ -81,6 +87,19 @@ type chatSendIn struct {
 	Ephemeral bool         `json:"ephemeral,omitempty"`
 	MsgType   string       `json:"msgType,omitempty"` // optional; default "normal"
 	Targets   []SendTarget `json:"targets"`
+}
+
+// chatEnvelopeAckIn is the client-device ack for an inbound chatEnvelope.
+// Sent after the SDK has decrypted and durably stored the envelope. The
+// node validates the envelopeUuid against the per-wsConn pending set
+// (populated when the node wrote a chatEnvelope to this WS) — unknown
+// uuids are dropped silently to keep spoofers from waking arbitrary
+// senders' inflight channels.
+type chatEnvelopeAckIn struct {
+	Kind           frameKind `json:"kind"`
+	EnvelopeUUID   string    `json:"envelopeUuid"`
+	SenderUserID   string    `json:"senderUserId"`
+	SenderDeviceID string    `json:"senderDeviceId"`
 }
 
 // SendTarget already JSON-tagged in dispatch.go for re-use; here we just
@@ -109,12 +128,77 @@ type chatPong struct {
 type wsConn struct {
 	conn   *websocket.Conn
 	writeM sync.Mutex
+
+	// Pending envelopes the node has WRITTEN to this WS that haven't been
+	// acked yet. Keyed by envelopeUuid → sender identity. Used to validate
+	// inbound chatEnvelopeAck frames so a hostile client can't wake
+	// arbitrary senders' inflight channels.
+	pendingM         sync.Mutex
+	pendingDelivered map[string]pendingEntry
+	pendingOrder     []string // FIFO of envelopeUuids; oldest at index 0
+}
+
+type pendingEntry struct {
+	senderUserID   string
+	senderDeviceID string
+}
+
+func newWsConn(conn *websocket.Conn) *wsConn {
+	return &wsConn{
+		conn:             conn,
+		pendingDelivered: make(map[string]pendingEntry, wsConnPendingCap),
+		pendingOrder:     make([]string, 0, wsConnPendingCap),
+	}
 }
 
 func (c *wsConn) writeJSON(v interface{}) error {
 	c.writeM.Lock()
 	defer c.writeM.Unlock()
 	return c.conn.WriteJSON(v)
+}
+
+// pendingAdd records an envelopeUuid the node just wrote to this WS. If
+// the set is at capacity, the oldest entry is evicted (FIFO).
+func (c *wsConn) pendingAdd(envelopeUUID, senderUserID, senderDeviceID string) {
+	c.pendingM.Lock()
+	defer c.pendingM.Unlock()
+	if _, exists := c.pendingDelivered[envelopeUUID]; exists {
+		// Retry from sender lands here — the entry already exists.
+		// No-op; don't reorder so eviction stays predictable.
+		return
+	}
+	if len(c.pendingOrder) >= wsConnPendingCap {
+		// Evict oldest. Sender will time out and webhook-fallback.
+		oldest := c.pendingOrder[0]
+		c.pendingOrder = c.pendingOrder[1:]
+		delete(c.pendingDelivered, oldest)
+	}
+	c.pendingDelivered[envelopeUUID] = pendingEntry{senderUserID: senderUserID, senderDeviceID: senderDeviceID}
+	c.pendingOrder = append(c.pendingOrder, envelopeUUID)
+}
+
+// pendingConsume validates an inbound chatEnvelopeAck against the pending
+// set. Returns true (and removes the entry) if the envelopeUuid was in
+// the set AND the claimed sender ids match what we wrote. Returns false
+// for unknown uuids (silent spoof rejection) or sender-id mismatch.
+func (c *wsConn) pendingConsume(envelopeUUID, senderUserID, senderDeviceID string) bool {
+	c.pendingM.Lock()
+	defer c.pendingM.Unlock()
+	entry, ok := c.pendingDelivered[envelopeUUID]
+	if !ok {
+		return false
+	}
+	if entry.senderUserID != senderUserID || entry.senderDeviceID != senderDeviceID {
+		return false
+	}
+	delete(c.pendingDelivered, envelopeUUID)
+	for i, uuid := range c.pendingOrder {
+		if uuid == envelopeUUID {
+			c.pendingOrder = append(c.pendingOrder[:i], c.pendingOrder[i+1:]...)
+			break
+		}
+	}
+	return true
 }
 
 // ── WS handler ──────────────────────────────────────────────────────────────
@@ -131,7 +215,7 @@ func (s *Service) serveWS(w http.ResponseWriter, r *http.Request) {
 		s.log.Debugw("chat ws upgrade failed", "err", err)
 		return
 	}
-	wc := &wsConn{conn: conn}
+	wc := newWsConn(conn)
 
 	apiKey := claims.Issuer
 	userID := claims.Subject
@@ -140,14 +224,21 @@ func (s *Service) serveWS(w http.ResponseWriter, r *http.Request) {
 
 	// Inbound mesh messages on this device's envelope topic. The kind
 	// discriminator routes to one of three paths:
-	//   envelope        → write to WS, ACK back to sender
+	//   envelope        → write to WS, record in pendingDelivered for ack
+	//                     validation. ACK to sender NO LONGER fires here —
+	//                     it fires when the client sends back chatEnvelopeAck
+	//                     after durably storing the envelope.
 	//   ack             → wake the SendOne goroutine waiting on this envelopeUuid
 	//   presenceReply   → wake the QueryAnyLive goroutine waiting on this queryId
-	onEnvelope := func(payload []byte) {
+	//
+	// Returns an error if the live-WS write failed. Used by DeliverLocal
+	// (same-node fast path) to skip the retry tick when the write was bad;
+	// cross-node path discards the error (sender finds out via no-ack).
+	onEnvelope := func(payload []byte) error {
 		var m meshMessage
 		if err := json.Unmarshal(payload, &m); err != nil {
 			s.log.Debugw("chat ws: bad mesh payload", "err", err)
-			return
+			return err
 		}
 		switch m.Kind {
 		case MeshKindEnvelope:
@@ -161,19 +252,24 @@ func (s *Service) serveWS(w http.ResponseWriter, r *http.Request) {
 			}
 			if err := wc.writeJSON(out); err != nil {
 				s.log.Debugw("chat ws: write envelope failed", "err", err)
-				return
+				return err
 			}
-			// ACK back on the SENDER's envelope topic so their existing
-			// subscription receives it. No per-envelope topic.
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			s.disp.PublishAck(ctx, apiKey, m.SenderUserID, m.SenderDeviceID, m.EnvelopeUUID)
+			// Anti-spoof bookkeeping: record this envelopeUuid + sender ids
+			// so the client's eventual chatEnvelopeAck can be validated.
+			// PublishAck is NOT called here anymore — it fires from the
+			// chatEnvelopeAck handler below, after the client confirms
+			// durable storage on its end.
+			wc.pendingAdd(m.EnvelopeUUID, m.SenderUserID, m.SenderDeviceID)
+			return nil
 		case MeshKindAck:
 			s.disp.SignalAck(m.EnvelopeUUID)
+			return nil
 		case MeshKindPresenceReply:
 			s.presence.SignalQueryReply(m.QueryID)
+			return nil
 		default:
 			s.log.Debugw("chat ws: unknown mesh kind", "kind", m.Kind)
+			return nil
 		}
 	}
 
@@ -240,6 +336,30 @@ func (s *Service) handleFrame(ctx context.Context, wc *wsConn, claims *ChatClaim
 			webhookURL,
 		)
 		_ = wc.writeJSON(chatSendResultOut{Kind: kindSendResult, Results: out})
+
+	case kindEnvelopeAck:
+		var ack chatEnvelopeAckIn
+		if err := json.Unmarshal(raw, &ack); err != nil {
+			s.log.Debugw("chat ws: bad chatEnvelopeAck", "err", err)
+			return
+		}
+		if ack.EnvelopeUUID == "" || ack.SenderUserID == "" || ack.SenderDeviceID == "" {
+			s.log.Debugw("chat ws: chatEnvelopeAck missing required field")
+			return
+		}
+		// Anti-spoof: only honor acks for envelopes the node actually wrote
+		// to this WS, AND whose sender ids match what we wrote (otherwise a
+		// hostile client could wake unrelated senders' inflight channels).
+		if !wc.pendingConsume(ack.EnvelopeUUID, ack.SenderUserID, ack.SenderDeviceID) {
+			s.log.Debugw("chat ws: chatEnvelopeAck rejected (unknown or mismatched)",
+				"envelopeUuid", ack.EnvelopeUUID,
+				"claimed_sender", ack.SenderUserID+"/"+ack.SenderDeviceID)
+			return
+		}
+		// Signal the sender. SignalDelivered short-circuits to local
+		// inflight if the sender is on this node; else publishes a
+		// MeshKindAck on the sender's envelope topic (cross-node).
+		s.disp.SignalDelivered(ctx, claims.Issuer, ack.SenderUserID, ack.SenderDeviceID, ack.EnvelopeUUID)
 
 	default:
 		s.log.Debugw("chat ws: unknown frame kind", "kind", env.Kind)

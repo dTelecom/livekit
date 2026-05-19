@@ -6,7 +6,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dTelecom/p2p-database/pubsub"
 	"github.com/livekit/protocol/logger"
 	"github.com/livekit/protocol/webhook"
 )
@@ -67,7 +66,7 @@ type SendResult struct {
 
 // Dispatcher owns the outbound send pipeline. One per node.
 type Dispatcher struct {
-	db              *pubsub.DB
+	db              pubsubAPI
 	presence        *PresenceTracker
 	notifier        webhook.Notifier
 	log             logger.Logger
@@ -81,10 +80,26 @@ type Dispatcher struct {
 	inflight   map[string]chan struct{}
 }
 
+// pubsubRetryInterval is how often a non-acknowledged send republishes on
+// the recipient's envelope topic within the fallbackTimeout window. Catches
+// the case where the recipient was briefly disconnected when the initial
+// publish landed and has since reconnected (its new subscription will see
+// the next retry). 500ms × ~4 retries within the default 2s timeout.
+const pubsubRetryInterval = 500 * time.Millisecond
+
+// postWebhookPublishTimeout bounds the one final publish after a successful
+// webhook POST. Catches the race where the recipient reconnected between
+// the last retry and webhook completion — the live publish hits B's new
+// subscription before B's drainPending /envelopes/pending runs (or the
+// SDK's pre-decrypt dedup drops it if drainPending got there first).
+const postWebhookPublishTimeout = 1 * time.Second
+
 // NewDispatcher wires the dispatcher. notifier is the existing webhook.Notifier
 // (signs with the node's wallet) used for offline-fallback POSTs.
+// `db` accepts the pubsub.DB concrete type via the pubsubAPI interface so
+// tests can inject an in-memory fake.
 func NewDispatcher(
-	db *pubsub.DB,
+	db pubsubAPI,
 	presence *PresenceTracker,
 	notifier webhook.Notifier,
 	fallbackTimeout, queryTimeout time.Duration,
@@ -100,8 +115,14 @@ func NewDispatcher(
 	}
 }
 
-// SendOne handles one target's full lifecycle: same-node fast path, then
-// publish + wait-for-ACK, then drop (ephemeral) or fallback-POST.
+// SendOne handles one target's full lifecycle: deliver-or-publish + wait
+// for client ack, retrying the publish every pubsubRetryInterval to catch
+// recipients that reconnect mid-flow. On timeout: ephemeral=drop;
+// non-ephemeral=webhook-fallback + one post-webhook publish.
+//
+// Live (`StatusLive`) means the recipient SDK explicitly acked via a
+// chatEnvelopeAck frame — not "the node's WS write returned nil." See
+// /Users/vf/x402/tasks/chat-client-ack.md for the full semantics.
 func (d *Dispatcher) SendOne(
 	ctx context.Context,
 	apiKey string,
@@ -124,33 +145,36 @@ func (d *Dispatcher) SendOne(
 		Ciphertext:     target.Ciphertext,
 		MsgType:        msgType,
 	}
+	envTopic := EnvelopeTopic(apiKey, recipientUserID, target.DeviceID)
 
-	// Same-node fast path: if the recipient device's WS is hosted on this
-	// node, deliver directly. The pubsub library filters self-published
-	// messages at the listener level, so a gossipsub publish would never
-	// land on a same-node subscriber. Pattern mirrors traffic_manager.go and
-	// node_provider.go.
-	if d.presence.DeliverLocal(apiKey, recipientUserID, target.DeviceID, msg) {
-		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusLive}
-	}
-
-	// Register the in-flight ACK channel BEFORE publishing — so an ACK that
-	// arrives between Publish and Select doesn't get dropped on the floor.
+	// Register the in-flight ACK channel BEFORE any delivery attempt — so
+	// an ACK that arrives between Publish and Select doesn't get dropped.
 	ackCh := d.registerInflight(target.EnvelopeUUID)
 	defer d.unregisterInflight(target.EnvelopeUUID)
 
-	envTopic := EnvelopeTopic(apiKey, recipientUserID, target.DeviceID)
-	if _, err := d.db.Publish(ctx, envTopic, msg); err != nil {
-		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusError, Err: fmt.Sprintf("publish: %v", err)}
-	}
+	// Initial delivery attempt (same-node fast path or gossipsub publish).
+	d.tryDeliverOrPublish(ctx, apiKey, recipientUserID, target.DeviceID, envTopic, msg)
 
-	select {
-	case <-ackCh:
-		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusLive}
-	case <-time.After(d.fallbackTimeout):
-		// No ACK; recipient device has no live WS anywhere on the mesh.
-	case <-ctx.Done():
-		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusError, Err: ctx.Err().Error()}
+	// Wait for the recipient's client-device ack, retrying the delivery
+	// every pubsubRetryInterval within the fallbackTimeout window. Retries
+	// catch recipients that reconnect mid-flow — their new subscription
+	// will see the next retry.
+	ticker := time.NewTicker(pubsubRetryInterval)
+	defer ticker.Stop()
+	deadline := time.After(d.fallbackTimeout)
+
+waitLoop:
+	for {
+		select {
+		case <-ackCh:
+			return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusLive}
+		case <-ticker.C:
+			d.tryDeliverOrPublish(ctx, apiKey, recipientUserID, target.DeviceID, envTopic, msg)
+		case <-deadline:
+			break waitLoop
+		case <-ctx.Done():
+			return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusError, Err: ctx.Err().Error()}
+		}
 	}
 
 	if ephemeral {
@@ -173,7 +197,56 @@ func (d *Dispatcher) SendOne(
 	if err := d.notifier.Notify(ctx, body, chatWebhookURL); err != nil {
 		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusError, Err: fmt.Sprintf("fallback POST: %v", err)}
 	}
+
+	// Post-webhook publish: catches the recipient-reconnects-after-webhook
+	// race. Best-effort — failure is fine because the webhook already
+	// durably stored the envelope and B will drain on next reconnect. The
+	// SDK's pre-decrypt dedup ensures B processes each envelopeUuid at
+	// most once even if it lands via both live WS (this publish) and
+	// /envelopes/pending (next reconnect's drain).
+	pubCtx, cancel := context.WithTimeout(ctx, postWebhookPublishTimeout)
+	if _, err := d.db.Publish(pubCtx, envTopic, msg); err != nil {
+		d.log.Debugw("post-webhook publish failed (non-fatal)", "err", err, "envelopeUuid", target.EnvelopeUUID)
+	}
+	cancel()
 	return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusStored}
+}
+
+// tryDeliverOrPublish attempts to deliver `msg` to (recipientUserID,
+// deviceID) via the same-node fast path; on cache miss (or local write
+// failure) it publishes on the gossipsub envelope topic so any node
+// hosting the recipient sees it.
+//
+// Note on the (delivered=true, writeOK=false) case: we skip the gossipsub
+// publish even though delivery clearly didn't reach the client. Two
+// reasons: (a) the pubsub library filters self-published messages at
+// the listener level, so a publish from this node wouldn't reach our
+// own local subscriber anyway; (b) if the local WS recovers before the
+// next retry tick, DeliverLocal will succeed then; if it doesn't recover,
+// the WS reader's UnregisterDevice will fire and the NEXT retry tick
+// (or the post-webhook publish) will fall through to the publish branch.
+func (d *Dispatcher) tryDeliverOrPublish(
+	ctx context.Context,
+	apiKey, recipientUserID, deviceID, envTopic string,
+	msg meshMessage,
+) {
+	delivered, writeOK := d.presence.DeliverLocal(apiKey, recipientUserID, deviceID, msg)
+	if delivered && writeOK {
+		// Local write succeeded; await the client's chatEnvelopeAck on the
+		// inflight channel.
+		return
+	}
+	if delivered && !writeOK {
+		// Local write failed (dead WS). Don't publish — same-node pubsub
+		// is filtered. Wait for the WS to recover or unregister.
+		return
+	}
+	// !delivered: recipient is not local. Publish on gossipsub so any
+	// other node hosting the recipient sees it. Failure here is non-fatal
+	// — the retry tick will try again.
+	if _, err := d.db.Publish(ctx, envTopic, msg); err != nil {
+		d.log.Debugw("publish failed (will retry)", "err", err, "envelopeUuid", msg.EnvelopeUUID)
+	}
 }
 
 // fallbackBody is the JSON body POSTed to the sender's chatWebhookUrl when
@@ -230,9 +303,51 @@ func (d *Dispatcher) SignalAck(envelopeUUID string) {
 	}
 }
 
-// PublishAck is called by the recipient-side envelope handler after a WS
-// delivery succeeds. Publishes the ACK on the SENDER's envelope topic so the
-// sender's existing subscription receives it — no per-envelope topic.
+// SignalDelivered is called from service.go when a client sends back a
+// chatEnvelopeAck for an envelope the node delivered to its WS. Routes
+// to the sender's inflight channel:
+//   - same-node: signal the local channel directly (no mesh round-trip)
+//   - cross-node: publish a MeshKindAck on the sender's envelope topic;
+//     the sender's onEnvelope handler picks it up and calls SignalAck
+//
+// Replaces the previous "ACK on writeJSON success" trigger in
+// service.go's onEnvelope — that path declared StatusLive whenever the
+// node's WS write returned nil, which is optimistic at the TCP layer
+// and races with the client tab closing mid-frame. See
+// /Users/vf/x402/tasks/chat-client-ack.md.
+func (d *Dispatcher) SignalDelivered(
+	ctx context.Context,
+	apiKey, senderUserID, senderDeviceID, envelopeUUID string,
+) {
+	if envelopeUUID == "" {
+		return
+	}
+	// Same-node short-circuit: if the inflight channel is here, the
+	// sender is on this node — wake them directly.
+	d.inflightMu.Lock()
+	ch, hasLocal := d.inflight[envelopeUUID]
+	d.inflightMu.Unlock()
+	if hasLocal {
+		select {
+		case ch <- struct{}{}:
+		default: // already signalled (e.g. retry-publish caused two acks); drop
+		}
+		return
+	}
+	// Cross-node: publish on the sender's envelope topic. The sender's
+	// node has a subscription there (its own /chat/ws connection) and
+	// will deliver into SignalAck.
+	d.PublishAck(ctx, apiKey, senderUserID, senderDeviceID, envelopeUUID)
+}
+
+// PublishAck publishes a MeshKindAck on the SENDER's envelope topic, so
+// the sender's node (which subscribes there for its own /chat/ws conn)
+// can wake SendOne's inflight channel via SignalAck.
+//
+// As of 2026-05-19 this is no longer called from onEnvelope (the
+// optimistic "WS write succeeded → ack" path); it's called only from
+// SignalDelivered's cross-node branch. Exported so SignalDelivered can
+// use it without a method-internal helper.
 func (d *Dispatcher) PublishAck(
 	ctx context.Context,
 	apiKey, senderUserID, senderDeviceID, envelopeUUID string,
