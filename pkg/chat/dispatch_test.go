@@ -337,20 +337,40 @@ func TestSendOne_PostWebhookPublishCatchesReconnect(t *testing.T) {
 	}
 }
 
-// Ephemeral envelopes drop on no-ack: no webhook, no push, no post-webhook
-// publish. The ticker may have fired a few retries before timeout — that's
-// fine for ephemeral too (typing is cheap to spam).
-func TestSendOne_Ephemeral_NoAck_Dropped(t *testing.T) {
-	disp, _, _, notif := newTestDispatcher(t, 300*time.Millisecond)
+// Ephemeral envelopes fast-path: one delivery attempt, no retry loop,
+// no wait for ack, no webhook, no post-webhook publish. The retry loop
+// for ephemerals (typing) was producing retry storms that parked the
+// receiver wsConn's reader behind the SendAll handleFrame path — and
+// typing is throttled/refreshed sender-side, so a missed delivery
+// resolves itself on the next refresh. Verify: returns immediately
+// (well under fallbackTimeout), exactly one publish/deliver attempt.
+func TestSendOne_Ephemeral_FastPath(t *testing.T) {
+	// fallbackTimeout intentionally long — if the fast-path ever
+	// regresses, the test would block on the retry loop instead of
+	// returning quickly.
+	disp, _, ps, notif := newTestDispatcher(t, 5*time.Second)
 
+	envTopic := EnvelopeTopic(testAPIKey, testRecipient, testRecipientDev)
+	start := time.Now()
 	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
 		testRecipient, makeTarget("uuid-6"), "normal", true /* ephemeral */, "http://test/webhook")
+	elapsed := time.Since(start)
 
 	if res.Status != StatusDropped {
 		t.Fatalf("status=%q, want %q", res.Status, StatusDropped)
 	}
 	if notif.callCount() != 0 {
 		t.Errorf("ephemeral webhook calls=%d; expected 0", notif.callCount())
+	}
+	// No retry loop → returns essentially instantly. Allow generous
+	// slack for CI scheduling, but well under fallbackTimeout / first
+	// retry tick (500ms).
+	if elapsed > 250*time.Millisecond {
+		t.Errorf("ephemeral SendOne took %v; expected near-immediate return (fast-path)", elapsed)
+	}
+	// Exactly one publish — no retries.
+	if n := ps.publishedOn(envTopic); n != 1 {
+		t.Errorf("envelope-topic publishes=%d; expected exactly 1 (fast-path, no retries)", n)
 	}
 }
 

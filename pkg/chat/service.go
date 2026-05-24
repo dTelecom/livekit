@@ -77,6 +77,23 @@ const (
 // from the sender's POV (acceptable — the webhook is the durability layer).
 const wsConnPendingCap = 256
 
+// wsConnSendConcurrency bounds the number of in-flight SendAll goroutines
+// per wsConn. SendAll blocks for up to fallbackTimeout (2s) waiting for the
+// recipient's chatEnvelopeAck — if handleFrame ran SendAll synchronously
+// on the WS read goroutine (its pre-2026-05 behavior), a single chatSend
+// would park the reader for up to 2s, queueing every subsequent frame
+// from that client (including chatEnvelopeAcks the SENDER node needs to
+// stop its own retries). 64 concurrent slots is comfortably above any
+// realistic per-user send rate (32 sustained sends/sec at 2s/send).
+const wsConnSendConcurrency = 64
+
+// wsConnSendQueueDepth is the buffered capacity of the per-wsConn send-job
+// queue, sized to absorb bursts that briefly exceed wsConnSendConcurrency
+// without dropping. On overflow, the kindSend handler returns
+// "send_queue_full" per-target error results immediately — keeping the
+// reader unblocked under sustained abuse.
+const wsConnSendQueueDepth = 256
+
 type frameEnvelope struct {
 	Kind frameKind `json:"kind"`
 }
@@ -136,6 +153,29 @@ type wsConn struct {
 	pendingM         sync.Mutex
 	pendingDelivered map[string]pendingEntry
 	pendingOrder     []string // FIFO of envelopeUuids; oldest at index 0
+
+	// Bounded send pool: decouples handleFrame's kindSend processing from
+	// the WS read loop so a long-running SendAll can't park subsequent
+	// frames (notably chatEnvelopeAcks) on this WS. See the
+	// wsConnSendConcurrency comment for the motivating bug.
+	//
+	//   sendQueue            buffered channel of jobs awaiting an execution slot.
+	//   sendSem              semaphore of size wsConnSendConcurrency; held while
+	//                        a job's SendAll runs.
+	//   sendDone             closed on WS teardown to stop the dispatcher and
+	//                        unblock any acquire-in-progress on sendSem.
+	//   sendDispatcherDone   closed by the dispatcher when it exits — callers
+	//                        must wait on this BEFORE calling sendWG.Wait,
+	//                        because sendWG.Add happens inside the dispatcher
+	//                        loop and racing it with Wait would violate the
+	//                        WaitGroup contract.
+	//   sendWG               tracks in-flight job goroutines so serveWS can wait
+	//                        them out on close.
+	sendQueue          chan func()
+	sendSem            chan struct{}
+	sendDone           chan struct{}
+	sendDispatcherDone chan struct{}
+	sendWG             sync.WaitGroup
 }
 
 type pendingEntry struct {
@@ -145,9 +185,13 @@ type pendingEntry struct {
 
 func newWsConn(conn *websocket.Conn) *wsConn {
 	return &wsConn{
-		conn:             conn,
-		pendingDelivered: make(map[string]pendingEntry, wsConnPendingCap),
-		pendingOrder:     make([]string, 0, wsConnPendingCap),
+		conn:               conn,
+		pendingDelivered:   make(map[string]pendingEntry, wsConnPendingCap),
+		pendingOrder:       make([]string, 0, wsConnPendingCap),
+		sendQueue:          make(chan func(), wsConnSendQueueDepth),
+		sendSem:            make(chan struct{}, wsConnSendConcurrency),
+		sendDone:           make(chan struct{}),
+		sendDispatcherDone: make(chan struct{}),
 	}
 }
 
@@ -278,7 +322,22 @@ func (s *Service) serveWS(w http.ResponseWriter, r *http.Request) {
 		_ = conn.Close()
 		return
 	}
+
+	// Start the per-wsConn send dispatcher BEFORE the read loop so the
+	// first kindSend frame already has a worker ready to drain its job.
+	go wc.runSendDispatcher(s.log)
+
 	defer func() {
+		// Stop the send dispatcher and wait for in-flight job goroutines
+		// to drain. The dispatcher acks its exit via sendDispatcherDone
+		// — we MUST wait for that before calling sendWG.Wait, because
+		// sendWG.Add runs inside the dispatcher loop and concurrent
+		// Add/Wait is a race. Workers themselves observe ctx.Done()
+		// (the request context cancels on WS close) and return
+		// StatusError from SendOne, so the drain returns promptly.
+		close(wc.sendDone)
+		<-wc.sendDispatcherDone
+		wc.sendWG.Wait()
 		s.presence.UnregisterDevice(apiKey, userID, deviceID)
 		_ = conn.Close()
 	}()
@@ -293,6 +352,42 @@ func (s *Service) serveWS(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleFrame(r.Context(), wc, claims, webhookURL, raw)
+	}
+}
+
+// runSendDispatcher is the per-wsConn goroutine that drains sendQueue,
+// acquires a slot on sendSem (bounded at wsConnSendConcurrency), and
+// spawns a worker goroutine to run the job. The dispatcher itself can
+// block on sendSem when all slots are occupied — that's fine, the WS
+// reader is decoupled and will keep enqueuing further jobs (or
+// fast-failing on queue overflow). Exits when sendDone is closed; on
+// exit closes sendDispatcherDone so callers know no further sendWG.Add
+// calls are possible and they can safely Wait on the in-flight workers.
+func (c *wsConn) runSendDispatcher(log logger.Logger) {
+	defer close(c.sendDispatcherDone)
+	for {
+		select {
+		case job, ok := <-c.sendQueue:
+			if !ok {
+				return
+			}
+			// Acquire a concurrency slot. Cancel-able so a shutdown
+			// while all 64 slots are in use doesn't hang the dispatcher.
+			select {
+			case c.sendSem <- struct{}{}:
+			case <-c.sendDone:
+				return
+			}
+			c.sendWG.Add(1)
+			go func(job func()) {
+				defer c.sendWG.Done()
+				defer func() { <-c.sendSem }()
+				defer recoverHandler(log, "kindSend worker")
+				job()
+			}(job)
+		case <-c.sendDone:
+			return
+		}
 	}
 }
 
@@ -324,18 +419,41 @@ func (s *Service) handleFrame(ctx context.Context, wc *wsConn, claims *ChatClaim
 		if msgType == "" {
 			msgType = "normal"
 		}
-		out := s.disp.SendAll(
-			ctx,
-			claims.Issuer,
-			claims.Subject,
-			claims.DeviceID,
-			req.ToUserID,
-			req.Targets,
-			msgType,
-			req.Ephemeral,
-			webhookURL,
-		)
-		_ = wc.writeJSON(chatSendResultOut{Kind: kindSendResult, Results: out})
+		// Async dispatch: SendAll blocks up to fallbackTimeout per target
+		// waiting for chatEnvelopeAck. Running it synchronously here parks
+		// the WS read loop and prevents this connection from processing
+		// follow-up frames — including chatEnvelopeAcks the SDK is
+		// trying to send back to stop OTHER senders' retry timers. The
+		// per-wsConn dispatcher (started in serveWS) drains sendQueue
+		// with concurrency bounded by sendSem.
+		job := func() {
+			out := s.disp.SendAll(
+				ctx,
+				claims.Issuer,
+				claims.Subject,
+				claims.DeviceID,
+				req.ToUserID,
+				req.Targets,
+				msgType,
+				req.Ephemeral,
+				webhookURL,
+			)
+			_ = wc.writeJSON(chatSendResultOut{Kind: kindSendResult, Results: out})
+		}
+		select {
+		case wc.sendQueue <- job:
+			// enqueued — the dispatcher will pick it up.
+		default:
+			// Queue full: client is sending faster than the bounded
+			// pool can drain. Return per-target errors immediately so
+			// the SDK's status tracker can mark the message "failed"
+			// (downgrade-from-pending path in StatusTracker.onSendResult).
+			// The reader stays unblocked.
+			_ = wc.writeJSON(chatSendResultOut{
+				Kind:    kindSendResult,
+				Results: errorResultsForTargets(req.Targets, "send_queue_full"),
+			})
+		}
 
 	case kindEnvelopeAck:
 		var ack chatEnvelopeAckIn
@@ -400,4 +518,21 @@ func (s *Service) validateSend(req *chatSendIn) error {
 		return fmt.Errorf("invalid msgType: %q", req.MsgType)
 	}
 	return nil
+}
+
+// errorResultsForTargets returns one StatusError SendResult per target,
+// preserving envelopeUuids so the client SDK's status tracker (which
+// keys on envelopeUuid → messageId) can downgrade the message to
+// "failed". Used by the kindSend handler when the per-wsConn send
+// queue overflows.
+func errorResultsForTargets(targets []SendTarget, errStr string) []SendResult {
+	out := make([]SendResult, len(targets))
+	for i, t := range targets {
+		out[i] = SendResult{
+			EnvelopeUUID: t.EnvelopeUUID,
+			Status:       StatusError,
+			Err:          errStr,
+		}
+	}
+	return out
 }

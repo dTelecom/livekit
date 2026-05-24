@@ -147,6 +147,20 @@ func (d *Dispatcher) SendOne(
 	}
 	envTopic := EnvelopeTopic(apiKey, recipientUserID, target.DeviceID)
 
+	// Ephemeral fast-path. Typing indicators (the only producer today —
+	// see TypingManager) are throttled to ≤1/3s sender-side and have a
+	// receiver-side visual TTL; a lost wire delivery just means the
+	// indicator doesn't show for a few seconds until the next refresh.
+	// Retrying for the full 2s deadline parks the receiving wsConn's
+	// reader behind the SendAll handleFrame path (see service.go's
+	// per-wsConn send pool) and produces the retry storms observed on
+	// rapid bursts. Deliver once and report StatusDropped — the SDK's
+	// status tracker treats StatusDropped as a no-op for ephemerals.
+	if ephemeral {
+		d.tryDeliverOrPublish(ctx, apiKey, recipientUserID, target.DeviceID, envTopic, msg)
+		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusDropped}
+	}
+
 	// Register the in-flight ACK channel BEFORE any delivery attempt — so
 	// an ACK that arrives between Publish and Select doesn't get dropped.
 	ackCh := d.registerInflight(target.EnvelopeUUID)
@@ -175,10 +189,6 @@ waitLoop:
 		case <-ctx.Done():
 			return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusError, Err: ctx.Err().Error()}
 		}
-	}
-
-	if ephemeral {
-		return SendResult{EnvelopeUUID: target.EnvelopeUUID, Status: StatusDropped}
 	}
 
 	// Decide push: any other device of the recipient live anywhere on the mesh?
