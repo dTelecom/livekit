@@ -184,7 +184,8 @@ func sendOneAsync(disp *Dispatcher, target SendTarget) <-chan SendResult {
 			testRecipient,
 			target,
 			"normal",
-			false,  // ephemeral
+			false, // ephemeral
+			nil,   // notifyPush (nil = legacy default)
 			"http://test/webhook",
 		)
 	}()
@@ -210,7 +211,7 @@ func TestSendOne_SameNode_HappyPath(t *testing.T) {
 	defer pres.UnregisterDevice(testAPIKey, testRecipient, testRecipientDev)
 
 	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("uuid-1"), "normal", false, "http://test/webhook")
+		testRecipient, makeTarget("uuid-1"), "normal", false, nil, "http://test/webhook")
 
 	if res.Status != StatusLive {
 		t.Fatalf("status=%q, want %q (err=%q)", res.Status, StatusLive, res.Err)
@@ -234,7 +235,7 @@ func TestSendOne_SameNode_WriteFails_FallsBack(t *testing.T) {
 	defer pres.UnregisterDevice(testAPIKey, testRecipient, testRecipientDev)
 
 	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("uuid-2"), "normal", false, "http://test/webhook")
+		testRecipient, makeTarget("uuid-2"), "normal", false, nil, "http://test/webhook")
 
 	if res.Status != StatusStored {
 		t.Fatalf("status=%q, want %q (err=%q)", res.Status, StatusStored, res.Err)
@@ -260,7 +261,7 @@ func TestSendOne_SameNode_WriteOKButNoAck_FallsBack(t *testing.T) {
 	defer pres.UnregisterDevice(testAPIKey, testRecipient, testRecipientDev)
 
 	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("uuid-3"), "normal", false, "http://test/webhook")
+		testRecipient, makeTarget("uuid-3"), "normal", false, nil, "http://test/webhook")
 
 	if res.Status != StatusStored {
 		t.Fatalf("status=%q, want %q (err=%q)", res.Status, StatusStored, res.Err)
@@ -321,7 +322,7 @@ func TestSendOne_PostWebhookPublishCatchesReconnect(t *testing.T) {
 	disp, _, ps, notif := newTestDispatcher(t, 300*time.Millisecond)
 
 	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("uuid-5"), "normal", false, "http://test/webhook")
+		testRecipient, makeTarget("uuid-5"), "normal", false, nil, "http://test/webhook")
 
 	if res.Status != StatusStored {
 		t.Fatalf("status=%q, want %q", res.Status, StatusStored)
@@ -334,6 +335,87 @@ func TestSendOne_PostWebhookPublishCatchesReconnect(t *testing.T) {
 	envTopic := EnvelopeTopic(testAPIKey, testRecipient, testRecipientDev)
 	if n := ps.publishedOn(envTopic); n < 1 {
 		t.Errorf("envelope-topic publishes=%d; expected ≥1 (retries + post-webhook)", n)
+	}
+}
+
+// boolPtr is a tiny test helper for the *bool notifyPush argument.
+func boolPtr(b bool) *bool { return &b }
+
+// fallbackBodyFromCall extracts the typed fallbackBody from the
+// fakeNotifier's recorded payload. The notifier's Notify signature
+// uses interface{} so the assert site has to type-narrow.
+func fallbackBodyFromCall(t *testing.T, call fakeNotifierCall) fallbackBody {
+	t.Helper()
+	body, ok := call.payload.(fallbackBody)
+	if !ok {
+		t.Fatalf("notifier payload is not fallbackBody: %T", call.payload)
+	}
+	return body
+}
+
+// notifyPush:nil (legacy SDK that doesn't set the field). Webhook body
+// must carry Push=true because the presence-based decision allows it
+// (no recipient device live). Verifies the legacy default is "allow".
+func TestSendOne_NotifyPush_NilDefaultsToAllow(t *testing.T) {
+	disp, _, _, notif := newTestDispatcher(t, 300*time.Millisecond)
+
+	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
+		testRecipient, makeTarget("np-nil"), "normal", false, nil /* notifyPush */, "http://test/webhook")
+
+	if res.Status != StatusStored {
+		t.Fatalf("status=%q, want %q", res.Status, StatusStored)
+	}
+	if notif.callCount() != 1 {
+		t.Fatalf("webhook calls=%d; expected 1", notif.callCount())
+	}
+	body := fallbackBodyFromCall(t, notif.calls[0])
+	if !body.Push {
+		t.Errorf("body.Push=%v; expected true (nil notifyPush = legacy default = allow)", body.Push)
+	}
+}
+
+// notifyPush=&true. Same outcome as nil — SDK explicitly opts in to
+// push, presence decision is "no live device" → body.Push=true.
+func TestSendOne_NotifyPush_ExplicitTrueAllowsPush(t *testing.T) {
+	disp, _, _, notif := newTestDispatcher(t, 300*time.Millisecond)
+
+	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
+		testRecipient, makeTarget("np-true"), "normal", false, boolPtr(true), "http://test/webhook")
+
+	if res.Status != StatusStored {
+		t.Fatalf("status=%q, want %q", res.Status, StatusStored)
+	}
+	if notif.callCount() != 1 {
+		t.Fatalf("webhook calls=%d; expected 1", notif.callCount())
+	}
+	body := fallbackBodyFromCall(t, notif.calls[0])
+	if !body.Push {
+		t.Errorf("body.Push=%v; expected true (notifyPush=&true)", body.Push)
+	}
+}
+
+// notifyPush=&false. SDK opts out — body.Push must be false even
+// though the presence decision would otherwise allow it. This is the
+// load-bearing case for content-aware push suppression. Without this
+// override, edits / deletes / receipts / selfEcho would still wake the
+// recipient via push when the peer is offline.
+func TestSendOne_NotifyPush_ExplicitFalseSuppressesPush(t *testing.T) {
+	disp, _, _, notif := newTestDispatcher(t, 300*time.Millisecond)
+
+	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
+		testRecipient, makeTarget("np-false"), "normal", false, boolPtr(false), "http://test/webhook")
+
+	// Envelope still goes to webhook (durable delivery preserved) — the
+	// flag only suppresses the push at the backend's gating step.
+	if res.Status != StatusStored {
+		t.Fatalf("status=%q, want %q", res.Status, StatusStored)
+	}
+	if notif.callCount() != 1 {
+		t.Fatalf("webhook calls=%d; expected 1 (durability is independent of push)", notif.callCount())
+	}
+	body := fallbackBodyFromCall(t, notif.calls[0])
+	if body.Push {
+		t.Errorf("body.Push=%v; expected false (notifyPush=&false)", body.Push)
 	}
 }
 
@@ -353,7 +435,7 @@ func TestSendOne_Ephemeral_FastPath(t *testing.T) {
 	envTopic := EnvelopeTopic(testAPIKey, testRecipient, testRecipientDev)
 	start := time.Now()
 	res := disp.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("uuid-6"), "normal", true /* ephemeral */, "http://test/webhook")
+		testRecipient, makeTarget("uuid-6"), "normal", true /* ephemeral */, nil /* notifyPush */, "http://test/webhook")
 	elapsed := time.Since(start)
 
 	if res.Status != StatusDropped {
@@ -632,7 +714,7 @@ func TestSendOne_CrossNode_HappyPath(t *testing.T) {
 	}
 
 	res := rig.senderD.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("xn-1"), "normal", false, "http://test/webhook")
+		testRecipient, makeTarget("xn-1"), "normal", false, nil, "http://test/webhook")
 	if res.Status != StatusLive {
 		t.Fatalf("status=%q, want %q (err=%q)", res.Status, StatusLive, res.Err)
 	}
@@ -654,7 +736,7 @@ func TestSendOne_CrossNode_NoAck_FallsBack(t *testing.T) {
 	}
 
 	res := rig.senderD.SendOne(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, makeTarget("xn-2"), "normal", false, "http://test/webhook")
+		testRecipient, makeTarget("xn-2"), "normal", false, nil, "http://test/webhook")
 	if res.Status != StatusStored {
 		t.Fatalf("status=%q, want %q (err=%q)", res.Status, StatusStored, res.Err)
 	}
@@ -694,7 +776,7 @@ func TestSendAll_PartialSuccess(t *testing.T) {
 		{DeviceID: "dev-silent", Ciphertext: "Y2lwaA==", EnvelopeUUID: "sa-2"},
 	}
 	results := disp.SendAll(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, targets, "normal", false, "http://test/webhook")
+		testRecipient, targets, "normal", false, nil, "http://test/webhook")
 
 	if len(results) != 2 {
 		t.Fatalf("results=%d; expected 2", len(results))
@@ -733,7 +815,7 @@ func TestSendAll_AllAck(t *testing.T) {
 		{DeviceID: "d3", Ciphertext: "Y2lwaA==", EnvelopeUUID: "aa-3"},
 	}
 	results := disp.SendAll(context.Background(), testAPIKey, testSender, testSenderDev,
-		testRecipient, targets, "normal", false, "http://test/webhook")
+		testRecipient, targets, "normal", false, nil, "http://test/webhook")
 
 	for _, r := range results {
 		if r.Status != StatusLive {

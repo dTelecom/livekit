@@ -123,6 +123,15 @@ func NewDispatcher(
 // Live (`StatusLive`) means the recipient SDK explicitly acked via a
 // chatEnvelopeAck frame — not "the node's WS write returned nil." See
 // /Users/vf/x402/tasks/chat-client-ack.md for the full semantics.
+// notifyPush is the SDK's per-frame hint: nil = legacy default (push
+// allowed), pointer-to-true = explicit push allowed, pointer-to-false =
+// SDK opted out of push for this envelope (e.g., an edit, a delete, a
+// selfEcho, a read/received receipt). The dispatcher ANDs it with the
+// presence-based push computation before setting fallbackBody.Push.
+//
+// Added 2026-05-28. Backward compat: old SDKs send no field → nil → the
+// AND defaults to the presence-based decision alone, preserving prior
+// behavior.
 func (d *Dispatcher) SendOne(
 	ctx context.Context,
 	apiKey string,
@@ -131,6 +140,7 @@ func (d *Dispatcher) SendOne(
 	target SendTarget,
 	msgType string,
 	ephemeral bool,
+	notifyPush *bool,
 	chatWebhookURL string,
 ) SendResult {
 	if target.EnvelopeUUID == "" {
@@ -191,8 +201,15 @@ waitLoop:
 		}
 	}
 
-	// Decide push: any other device of the recipient live anywhere on the mesh?
-	push := !d.presence.QueryAnyLive(ctx, apiKey, senderUserID, senderDeviceID, recipientUserID, d.queryTimeout)
+	// Decide push:
+	//   1) presence-based — fire push only if no device of the recipient is
+	//      live anywhere on the mesh (otherwise the live device handles it),
+	//   2) AND notifyPush — the sender SDK can opt out for content types
+	//      that shouldn't wake the recipient (edits, deletes, receipts,
+	//      selfEcho). nil = legacy default = allow.
+	presencePush := !d.presence.QueryAnyLive(ctx, apiKey, senderUserID, senderDeviceID, recipientUserID, d.queryTimeout)
+	sdkAllowsPush := notifyPush == nil || *notifyPush
+	push := presencePush && sdkAllowsPush
 
 	body := fallbackBody{
 		EnvelopeUUID:      target.EnvelopeUUID,
@@ -281,6 +298,7 @@ func (d *Dispatcher) SendAll(
 	targets []SendTarget,
 	msgType string,
 	ephemeral bool,
+	notifyPush *bool,
 	chatWebhookURL string,
 ) []SendResult {
 	results := make([]SendResult, len(targets))
@@ -291,7 +309,7 @@ func (d *Dispatcher) SendAll(
 			defer wg.Done()
 			defer recoverHandler(d.log, "SendOne")
 			results[i] = d.SendOne(ctx, apiKey, senderUserID, senderDeviceID, recipientUserID,
-				targets[i], msgType, ephemeral, chatWebhookURL)
+				targets[i], msgType, ephemeral, notifyPush, chatWebhookURL)
 		}(i)
 	}
 	wg.Wait()

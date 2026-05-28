@@ -102,8 +102,15 @@ type chatSendIn struct {
 	Kind      frameKind    `json:"kind"`
 	ToUserID  string       `json:"toUserId"`
 	Ephemeral bool         `json:"ephemeral,omitempty"`
-	MsgType   string       `json:"msgType,omitempty"` // optional; default "normal"
-	Targets   []SendTarget `json:"targets"`
+	// NotifyPush is the sender's hint to suppress push for this envelope.
+	// Pointer so we can distinguish "absent" (legacy SDK — default to
+	// allowed) from "explicitly false". The dispatcher ANDs this with
+	// its presence-based push computation before setting the webhook
+	// body's `push` field. Added 2026-05-28 — content-aware push
+	// suppression for edits/deletes/receipts/selfEcho.
+	NotifyPush *bool        `json:"notifyPush,omitempty"`
+	MsgType    string       `json:"msgType,omitempty"` // optional; default "normal"
+	Targets    []SendTarget `json:"targets"`
 }
 
 // chatEnvelopeAckIn is the client-device ack for an inbound chatEnvelope.
@@ -436,6 +443,7 @@ func (s *Service) handleFrame(ctx context.Context, wc *wsConn, claims *ChatClaim
 				req.Targets,
 				msgType,
 				req.Ephemeral,
+				req.NotifyPush,
 				webhookURL,
 			)
 			_ = wc.writeJSON(chatSendResultOut{Kind: kindSendResult, Results: out})
