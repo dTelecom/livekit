@@ -306,6 +306,10 @@ func (r *RoomManager) StartSession(
 			if iceConfig == nil {
 				iceConfig = &livekit.ICEConfig{}
 			}
+			if r.forceTLS() {
+				iceConfig.PreferenceSubscriber = livekit.ICECandidateType_ICT_TLS
+				iceConfig.PreferencePublisher = livekit.ICECandidateType_ICT_TLS
+			}
 			if err = room.ResumeParticipant(participant, requestSource, responseSink,
 				r.iceServersForRoom(protoRoom, iceConfig.PreferenceSubscriber == livekit.ICECandidateType_ICT_TLS),
 				pi.ReconnectReason); err != nil {
@@ -359,6 +363,7 @@ func (r *RoomManager) StartSession(
 	if r.config.RTC.PreferTLSOnFirstFailure != nil {
 		preferTLSOnFirstFailure = *r.config.RTC.PreferTLSOnFirstFailure
 	}
+	forceTLS := r.forceTLS()
 	// default do not force full reconnect on a publication error
 	reconnectOnPublicationError := false
 	if r.config.RTC.ReconnectOnPublicationError != nil {
@@ -394,6 +399,7 @@ func (r *RoomManager) StartSession(
 		AllowTCPFallback:        allowFallback,
 		TURNSEnabled:            r.config.IsTURNSEnabled(),
 		PreferTLSOnFirstFailure: preferTLSOnFirstFailure,
+		ForceTLS:                forceTLS,
 		GetParticipantInfo: func(pID livekit.ParticipantID) *livekit.ParticipantInfo {
 			if p := room.GetParticipantByID(pID); p != nil {
 				return p.ToProto()
@@ -1173,10 +1179,24 @@ func (r *RoomManager) refreshToken(participant types.LocalParticipant) error {
 	return nil
 }
 
+// forceTLS reports whether all connections should be forced to relay through
+// TURN/TLS from the first attempt. Only honored when TURN/TLS is actually
+// configured, otherwise forcing would make every connection fail.
+func (r *RoomManager) forceTLS() bool {
+	return r.config.RTC.ForceTLS && r.config.IsTURNSEnabled()
+}
+
 func (r *RoomManager) setIceConfig(participant types.LocalParticipant) *livekit.ICEConfig {
 	iceConfig := r.getIceConfig(participant)
 	if iceConfig == nil {
-		return &livekit.ICEConfig{}
+		if !r.forceTLS() {
+			return &livekit.ICEConfig{}
+		}
+		iceConfig = &livekit.ICEConfig{}
+	}
+	if r.forceTLS() {
+		iceConfig.PreferenceSubscriber = livekit.ICECandidateType_ICT_TLS
+		iceConfig.PreferencePublisher = livekit.ICECandidateType_ICT_TLS
 	}
 	participant.SetICEConfig(iceConfig)
 	return iceConfig

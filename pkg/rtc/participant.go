@@ -91,6 +91,7 @@ type ParticipantParams struct {
 	TCPFallbackRTTThreshold      int
 	TURNSEnabled                 bool
 	PreferTLSOnFirstFailure      bool
+	ForceTLS                     bool
 	GetParticipantInfo           func(pID livekit.ParticipantID) *livekit.ParticipantInfo
 	ReconnectOnPublicationError  bool
 	ReconnectOnSubscriptionError bool
@@ -1031,6 +1032,7 @@ func (p *ParticipantImpl) setupTransportManager() error {
 		TCPFallbackRTTThreshold: p.params.TCPFallbackRTTThreshold,
 		TURNSEnabled:            p.params.TURNSEnabled,
 		PreferTLSOnFirstFailure: p.params.PreferTLSOnFirstFailure,
+		ForceTLS:                p.params.ForceTLS,
 		Logger:                  p.params.Logger,
 	})
 	if err != nil {

@@ -157,6 +157,13 @@ type RTCConfig struct {
 	// the LiveKit ICE/TCP port is blocked but 443/TLS is allowed.
 	PreferTLSOnFirstFailure *bool `yaml:"prefer_tls_on_first_failure,omitempty"`
 
+	// force every connection to relay through TURN/TLS from the first attempt,
+	// instead of trying direct/UDP candidates first. Clients are advertised only
+	// the turns:<domain>:443 ICE server and get ForceRelay enabled, and the
+	// server never downgrades below TLS on failure. Requires TURN/TLS to be
+	// configured (IsTURNSEnabled); ignored otherwise. Defaults to false.
+	ForceTLS bool `yaml:"force_tls,omitempty"`
+
 	// for testing, disable UDP
 	ForceTCP bool `yaml:"force_tcp,omitempty"`
 
