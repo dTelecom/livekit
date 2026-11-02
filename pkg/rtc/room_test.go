@@ -15,6 +15,7 @@ import (
 
 	"github.com/livekit/livekit-server/pkg/config"
 	serverlogger "github.com/livekit/livekit-server/pkg/logger"
+	"github.com/livekit/livekit-server/pkg/rtc/relay"
 	"github.com/livekit/livekit-server/pkg/rtc/types"
 	"github.com/livekit/livekit-server/pkg/rtc/types/typesfakes"
 	"github.com/livekit/livekit-server/pkg/sfu/audio"
@@ -690,6 +691,7 @@ func newRoomWithParticipants(t *testing.T, opts testRoomOpts) *Room {
 		&livekit.Room{Name: "room"},
 		nil,
 		WebRTCConfig{},
+		relay.WebRTCRelayConfig{},
 		&config.AudioConfig{
 			UpdateInterval:  audioUpdateInterval,
 			SmoothIntervals: opts.audioSmoothIntervals,
@@ -701,7 +703,7 @@ func newRoomWithParticipants(t *testing.T, opts testRoomOpts) *Room {
 			NodeId:   "testnode",
 			Region:   "testregion",
 		},
-		telemetry.NewTelemetryService(webhook.NewNotifier("", "", nil), &telemetryfakes.FakeAnalyticsService{}),
+		telemetry.NewTelemetryService(webhook.NewNotifier("", ""), &telemetryfakes.FakeAnalyticsService{}),
 		nil,
 	)
 	for i := 0; i < opts.num+opts.numHidden; i++ {

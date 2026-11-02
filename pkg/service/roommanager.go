@@ -454,7 +454,7 @@ func (r *RoomManager) StartSession(
 		// update room store with new numParticipants
 		proto := room.ToProto()
 		persistRoomForParticipantCount(proto)
-		r.telemetry.ParticipantLeft(ctx, proto, p.ToProto(), true, p.ClaimGrants().WebHookURL)
+		r.telemetry.ParticipantLeft(ctx, proto, p.ToProto(), true, p.ClaimGrants().AllWebHookURLs())
 
 		room.RemoveDisallowedSubscriptions(p, disallowedSubscriptions)
 	})
@@ -1390,7 +1390,7 @@ func (r *RoomManager) onRelayParticipantUpdate(room *rtc.Room, rel relay.Relay, 
 				if err := r.roomStore.DeleteParticipant(context.TODO(), room.Key(), p.Identity()); err != nil {
 					logger.Errorw("Failed to delete remote participant", err, "identity", p.Identity(), "roomKey", room.Key(), "roomID", room.ID())
 				}
-				r.telemetry.ParticipantLeft(context.TODO(), room.ToProto(), p.ToProto(), true, p.ClaimGrants().WebHookURL)
+				r.telemetry.ParticipantLeft(context.TODO(), room.ToProto(), p.ToProto(), true, p.ClaimGrants().AllWebHookURLs())
 			})
 			logger.Infow("Remote participant joined", "identity", participant.Identity(), "roomKey", room.Key(), "roomID", room.ID())
 		}
