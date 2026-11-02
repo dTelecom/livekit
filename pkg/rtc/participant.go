@@ -435,6 +435,7 @@ func (p *ParticipantImpl) ToProto() *livekit.ParticipantInfo {
 		Metadata:    p.grants.Metadata,
 		Region:      p.params.Region,
 		IsPublisher: p.IsPublisher(),
+		RttMs:       p.lastRTT,
 	}
 	p.lock.RUnlock()
 	info.Tracks = p.UpTrackManager.ToProto()
@@ -1799,6 +1800,7 @@ func (p *ParticipantImpl) addMediaTrack(signalCid string, sdpCid string, ti *liv
 			p.Identity(),
 			mt.ToProto(),
 			!p.IsClosed(),
+			p.trackEventWebHookURLs(),
 		)
 
 		// re-use Track sid
@@ -1841,6 +1843,7 @@ func (p *ParticipantImpl) handleTrackPublished(track types.MediaTrack) {
 		p.Identity(),
 		track.ToProto(),
 		true,
+		p.trackEventWebHookURLs(),
 	)
 
 	p.pendingTracksLock.Lock()
@@ -1850,6 +1853,16 @@ func (p *ParticipantImpl) handleTrackPublished(track types.MediaTrack) {
 	if !p.hasPendingMigratedTrack() {
 		p.SetMigrateState(types.MigrateStateComplete)
 	}
+}
+
+// trackEventWebHookURLs returns where track events go. Only tokens with the webHookURLs claim get
+// them, so a token with just the legacy webHookURL keeps receiving participant events alone.
+func (p *ParticipantImpl) trackEventWebHookURLs() []string {
+	grants := p.ClaimGrants()
+	if len(grants.WebHookURLs) == 0 {
+		return nil
+	}
+	return grants.AllWebHookURLs()
 }
 
 func (p *ParticipantImpl) hasPendingMigratedTrack() bool {

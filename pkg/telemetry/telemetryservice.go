@@ -24,17 +24,17 @@ type TelemetryService interface {
 	// ParticipantJoined - a participant establishes signal connection to a room
 	ParticipantJoined(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientInfo *livekit.ClientInfo, clientMeta *livekit.AnalyticsClientMeta, shouldSendEvent bool)
 	// ParticipantActive - a participant establishes media connection
-	ParticipantActive(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientMeta *livekit.AnalyticsClientMeta, url string)
+	ParticipantActive(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, clientMeta *livekit.AnalyticsClientMeta, urls []string)
 	// ParticipantResumed - there has been an ICE restart or connection resume attempt
 	ParticipantResumed(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, nodeID livekit.NodeID, reason livekit.ReconnectReason)
 	// ParticipantLeft - the participant leaves the room, only sent if ParticipantActive has been called before
-	ParticipantLeft(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, shouldSendEvent bool, url string)
+	ParticipantLeft(ctx context.Context, room *livekit.Room, participant *livekit.ParticipantInfo, shouldSendEvent bool, urls []string)
 	// TrackPublishRequested - a publication attempt has been received
 	TrackPublishRequested(ctx context.Context, participantID livekit.ParticipantID, identity livekit.ParticipantIdentity, track *livekit.TrackInfo)
 	// TrackPublished - a publication attempt has been successful
-	TrackPublished(ctx context.Context, participantID livekit.ParticipantID, identity livekit.ParticipantIdentity, track *livekit.TrackInfo, shouldSendEvent bool)
+	TrackPublished(ctx context.Context, participantID livekit.ParticipantID, identity livekit.ParticipantIdentity, track *livekit.TrackInfo, shouldSendEvent bool, urls []string)
 	// TrackUnpublished - a participant unpublished a track
-	TrackUnpublished(ctx context.Context, participantID livekit.ParticipantID, identity livekit.ParticipantIdentity, track *livekit.TrackInfo, shouldSendEvent bool)
+	TrackUnpublished(ctx context.Context, participantID livekit.ParticipantID, identity livekit.ParticipantIdentity, track *livekit.TrackInfo, shouldSendEvent bool, urls []string)
 	// TrackSubscribeRequested - a participant requested to subscribe to a track
 	TrackSubscribeRequested(ctx context.Context, participantID livekit.ParticipantID, track *livekit.TrackInfo)
 	// TrackSubscribed - a participant subscribed to a track successfully
@@ -59,7 +59,7 @@ type TelemetryService interface {
 
 	// helpers
 	AnalyticsService
-	NotifyEvent(ctx context.Context, event *livekit.WebhookEvent, url string)
+	NotifyEvent(ctx context.Context, event *livekit.WebhookEvent, urls []string)
 	FlushStats()
 }
 
@@ -143,6 +143,7 @@ func (t *telemetryService) getWorker(participantID livekit.ParticipantID) (worke
 func (t *telemetryService) createWorker(ctx context.Context,
 	roomID livekit.RoomID,
 	roomName livekit.RoomName,
+	roomKey livekit.RoomKey,
 	participantID livekit.ParticipantID,
 	participantIdentity livekit.ParticipantIdentity,
 ) *StatsWorker {
@@ -151,6 +152,7 @@ func (t *telemetryService) createWorker(ctx context.Context,
 		t,
 		roomID,
 		roomName,
+		roomKey,
 		participantID,
 		participantIdentity,
 	)

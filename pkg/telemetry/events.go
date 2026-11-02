@@ -13,23 +13,27 @@ import (
 	"github.com/livekit/protocol/webhook"
 )
 
-func (t *telemetryService) NotifyEvent(ctx context.Context, event *livekit.WebhookEvent, url string) {
+// NotifyEvent delivers one event, with one id, to each URL.
+func (t *telemetryService) NotifyEvent(ctx context.Context, event *livekit.WebhookEvent, urls []string) {
 	if t.notifier == nil {
 		return
 	}
 
-	if url == "" {
+	if len(urls) == 0 {
 		return
 	}
 
 	event.CreatedAt = time.Now().Unix()
 	event.Id = utils.NewGuid("EV_")
 
-	t.webhookPool.Submit(func() {
-		if err := t.notifier.Notify(ctx, event, url); err != nil {
-			logger.Warnw("failed to notify webhook", err, "event", event.Event)
-		}
-	})
+	for _, url := range urls {
+		url := url
+		t.webhookPool.Submit(func() {
+			if err := t.notifier.Notify(ctx, event, url); err != nil {
+				logger.Warnw("failed to notify webhook", err, "event", event.Event)
+			}
+		})
+	}
 }
 
 func (t *telemetryService) RoomStarted(ctx context.Context, room *livekit.Room) {
@@ -37,7 +41,7 @@ func (t *telemetryService) RoomStarted(ctx context.Context, room *livekit.Room) 
 		t.NotifyEvent(ctx, &livekit.WebhookEvent{
 			Event: webhook.EventRoomStarted,
 			Room:  room,
-		}, "")
+		}, nil)
 
 		t.SendEvent(ctx, &livekit.AnalyticsEvent{
 			Type:      livekit.AnalyticsEventType_ROOM_CREATED,
@@ -52,7 +56,7 @@ func (t *telemetryService) RoomEnded(ctx context.Context, room *livekit.Room) {
 		t.NotifyEvent(ctx, &livekit.WebhookEvent{
 			Event: webhook.EventRoomFinished,
 			Room:  room,
-		}, "")
+		}, nil)
 
 		t.SendEvent(ctx, &livekit.AnalyticsEvent{
 			Type:      livekit.AnalyticsEventType_ROOM_ENDED,
@@ -83,6 +87,7 @@ func (t *telemetryService) ParticipantJoined(
 			ctx,
 			livekit.RoomID(room.Sid),
 			livekit.RoomName(room.Name),
+			livekit.RoomKey(room.Key),
 			livekit.ParticipantID(participant.Sid),
 			livekit.ParticipantIdentity(participant.Identity),
 		)
@@ -101,7 +106,7 @@ func (t *telemetryService) ParticipantActive(
 	room *livekit.Room,
 	participant *livekit.ParticipantInfo,
 	clientMeta *livekit.AnalyticsClientMeta,
-	url string,
+	urls []string,
 ) {
 	t.enqueue(func() {
 		// consider participant joined only when they became active
@@ -109,7 +114,7 @@ func (t *telemetryService) ParticipantActive(
 			Event:       webhook.EventParticipantJoined,
 			Room:        room,
 			Participant: participant,
-		}, url)
+		}, urls)
 
 		worker, ok := t.getWorker(livekit.ParticipantID(participant.Sid))
 		if !ok {
@@ -119,6 +124,7 @@ func (t *telemetryService) ParticipantActive(
 				ctx,
 				livekit.RoomID(room.Sid),
 				livekit.RoomName(room.Name),
+				livekit.RoomKey(room.Key),
 				livekit.ParticipantID(participant.Sid),
 				livekit.ParticipantIdentity(participant.Identity),
 			)
@@ -160,7 +166,7 @@ func (t *telemetryService) ParticipantLeft(ctx context.Context,
 	room *livekit.Room,
 	participant *livekit.ParticipantInfo,
 	shouldSendEvent bool,
-	url string,
+	urls []string,
 ) {
 	t.enqueue(func() {
 		isConnected := false
@@ -185,7 +191,7 @@ func (t *telemetryService) ParticipantLeft(ctx context.Context,
 				Event:       webhook.EventParticipantLeft,
 				Room:        room,
 				Participant: participant,
-			}, url)
+			}, urls)
 
 			t.SendEvent(ctx, newParticipantEvent(livekit.AnalyticsEventType_PARTICIPANT_LEFT, room, participant))
 		}
@@ -215,6 +221,7 @@ func (t *telemetryService) TrackPublished(
 	identity livekit.ParticipantIdentity,
 	track *livekit.TrackInfo,
 	shouldSendEvent bool,
+	urls []string,
 ) {
 	t.enqueue(func() {
 
@@ -235,7 +242,7 @@ func (t *telemetryService) TrackPublished(
 			Room:        room,
 			Participant: participant,
 			Track:       track,
-		}, "")
+		}, urls)
 
 		ev := newTrackEvent(livekit.AnalyticsEventType_TRACK_PUBLISHED, room, participantID, track)
 		ev.Participant = participant
@@ -342,6 +349,7 @@ func (t *telemetryService) TrackUnpublished(
 	identity livekit.ParticipantIdentity,
 	track *livekit.TrackInfo,
 	shouldSendEvent bool,
+	urls []string,
 ) {
 	t.enqueue(func() {
 		prometheus.SubPublishedTrack(track.Type.String())
@@ -359,7 +367,7 @@ func (t *telemetryService) TrackUnpublished(
 			Room:        room,
 			Participant: participant,
 			Track:       track,
-		}, "")
+		}, urls)
 
 		t.SendEvent(ctx, newTrackEvent(livekit.AnalyticsEventType_TRACK_UNPUBLISHED, room, participantID, track))
 	})
@@ -430,7 +438,7 @@ func (t *telemetryService) EgressStarted(ctx context.Context, info *livekit.Egre
 		t.NotifyEvent(ctx, &livekit.WebhookEvent{
 			Event:      webhook.EventEgressStarted,
 			EgressInfo: info,
-		}, "")
+		}, nil)
 
 		t.SendEvent(ctx, newEgressEvent(livekit.AnalyticsEventType_EGRESS_STARTED, info))
 	})
@@ -441,7 +449,7 @@ func (t *telemetryService) EgressUpdated(ctx context.Context, info *livekit.Egre
 		t.NotifyEvent(ctx, &livekit.WebhookEvent{
 			Event:      webhook.EventEgressUpdated,
 			EgressInfo: info,
-		}, "")
+		}, nil)
 	})
 }
 
@@ -450,19 +458,20 @@ func (t *telemetryService) EgressEnded(ctx context.Context, info *livekit.Egress
 		t.NotifyEvent(ctx, &livekit.WebhookEvent{
 			Event:      webhook.EventEgressEnded,
 			EgressInfo: info,
-		}, "")
+		}, nil)
 
 		t.SendEvent(ctx, newEgressEvent(livekit.AnalyticsEventType_EGRESS_ENDED, info))
 	})
 }
 
-// returns a livekit.Room with only name and sid filled out
+// returns a livekit.Room with only name, sid and key filled out
 // returns nil if room is not found
 func (t *telemetryService) getRoomDetails(participantID livekit.ParticipantID) *livekit.Room {
 	if worker, ok := t.getWorker(participantID); ok {
 		return &livekit.Room{
 			Sid:  string(worker.roomID),
 			Name: string(worker.roomName),
+			Key:  string(worker.roomKey),
 		}
 	}
 

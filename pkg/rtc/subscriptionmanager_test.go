@@ -338,6 +338,7 @@ func newTestSubscriptionManager(t *testing.T) *SubscriptionManager {
 	p.IDReturns("subID")
 	p.IdentityReturns("sub")
 	return NewSubscriptionManager(SubscriptionManagerParams{
+		BandwidthChecker:    func(livekit.ApiKey, int64) bool { return true },
 		Participant:         p,
 		Logger:              logger.GetLogger(),
 		OnTrackSubscribed:   func(subTrack types.SubscribedTrack) {},
