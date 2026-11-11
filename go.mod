@@ -8,6 +8,8 @@ replace github.com/livekit/protocol v1.5.4 => github.com/dTelecom/protocol v1.0.
 
 replace github.com/livekit/psrpc v0.2.10 => github.com/dTelecom/psrpc v1.0.16
 
+replace github.com/pion/turn/v2 v2.1.0 => github.com/dTelecom/turn/v2 v2.1.0-dtelecom.1
+
 require (
 	github.com/bep/debounce v1.2.1
 	github.com/d5/tengo/v2 v2.14.0
