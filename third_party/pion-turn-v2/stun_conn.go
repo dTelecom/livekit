@@ -13,6 +13,7 @@ import (
 var (
 	errInvalidTURNFrame    = errors.New("data is not a valid TURN frame, no STUN or ChannelData found")
 	errIncompleteTURNFrame = errors.New("data contains incomplete STUN or TURN frame")
+	errTURNFrameTooLarge   = errors.New("TURN frame is larger than the supplied buffer")
 )
 
 // STUNConn wraps a net.Conn and implements
@@ -41,24 +42,27 @@ func consumeSingleTURNFrame(p []byte) (int, error) {
 		return 0, errIncompleteTURNFrame
 	}
 
-	var datagramSize uint16
+	// dTelecom patch (backport of upstream pion/turn master): use uint32, not
+	// uint16, for the frame size. A STUN length >= 0xFFEC or a ChannelData
+	// length >= 0xFFFC plus its header overflows uint16 and wraps to 0, making
+	// ReadFrom report an empty frame with a nil error without consuming any
+	// buffered data, so the server read loop spins forever.
+	var datagramSize uint32
 	switch {
 	case stun.IsMessage(p):
-		datagramSize = binary.BigEndian.Uint16(p[2:4]) + stunHeaderSize
+		datagramSize = uint32(binary.BigEndian.Uint16(p[2:4])) + stunHeaderSize
 	case proto.ChannelNumber(binary.BigEndian.Uint16(p[0:2])).Valid():
-		datagramSize = binary.BigEndian.Uint16(p[channelDataNumberSize:channelDataHeaderSize])
-		if paddingOverflow := (datagramSize + channelDataPadding) % channelDataPadding; paddingOverflow != 0 {
-			datagramSize = (datagramSize + channelDataPadding) - paddingOverflow
-		}
-
-		datagramSize += channelDataHeaderSize
+		dataLen := uint32(binary.BigEndian.Uint16(p[channelDataNumberSize:channelDataHeaderSize]))
+		// Round up to the nearest multiple of the 4-byte padding.
+		paddedDataLen := (dataLen + channelDataPadding - 1) &^ (channelDataPadding - 1)
+		datagramSize = paddedDataLen + channelDataHeaderSize
 	case len(p) < stunHeaderSize:
 		return 0, errIncompleteTURNFrame
 	default:
 		return 0, errInvalidTURNFrame
 	}
 
-	if len(p) < int(datagramSize) {
+	if uint64(len(p)) < uint64(datagramSize) {
 		return 0, errIncompleteTURNFrame
 	}
 
@@ -72,6 +76,17 @@ func (s *STUNConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	if errors.Is(err, errInvalidTURNFrame) {
 		return 0, nil, err
 	} else if err == nil {
+		// dTelecom patch (backport of upstream pion/turn master): reject a
+		// frame whose declared size does not fit in the caller's buffer
+		// instead of reporting more bytes than were copied. net.PacketConn
+		// forbids n > len(p), and Server.readLoop slices buf[:n], which
+		// panicked and crashed the whole process. The frame is consumed so
+		// the stream framing stays aligned for the next read.
+		if n > len(p) {
+			s.buff = s.buff[n:]
+
+			return 0, nil, errTURNFrameTooLarge
+		}
 		copy(p, s.buff[:n])
 		s.buff = s.buff[n:]
 
