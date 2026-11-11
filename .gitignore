@@ -34,3 +34,5 @@ config1.yaml
 config2.yaml
 logs/
 doc/
+# vendored pion/turn copy keeps its internal/proto package
+!third_party/pion-turn-v2/internal/proto/
