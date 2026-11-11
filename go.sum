@@ -67,6 +67,8 @@ github.com/dTelecom/protocol v1.0.23 h1:y87YVGG38E/ExtzAWFaK3eyuKyTsWMYFUYAmOusW
 github.com/dTelecom/protocol v1.0.23/go.mod h1:jjAYPgeKzrmNuNjmeDXRrfW0uUYmZBppxJkzNXRsMLs=
 github.com/dTelecom/psrpc v1.0.16 h1:WltSApMr72WdOd+goHuRK5steg7b0y6q9rZ1qTFMBGY=
 github.com/dTelecom/psrpc v1.0.16/go.mod h1:K0j8f1PgLShR7Lx80KbmwFkDH2BvOnycXGV0OSRURKc=
+github.com/dTelecom/turn/v2 v2.1.0-dtelecom.1 h1:Fhz//rnQTYybAHnE6uXtJJKJ7xUmbpQPoA5sEQHfs5s=
+github.com/dTelecom/turn/v2 v2.1.0-dtelecom.1/go.mod h1:yrT5XbXSGX1VFSF31A3c1kCNB5bBZgk/uu5LET162qs=
 github.com/davecgh/go-spew v1.1.0/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
 github.com/davecgh/go-spew v1.1.1 h1:vj9j/u1bqnvCEfJOwUhtlOARqs3+rkHYY13jYWTU97c=
 github.com/davecgh/go-spew v1.1.1/go.mod h1:J7Y8YcW2NihsgmVo/mv3lAwl/skON4iLHjSsI+c5H38=
@@ -517,8 +519,6 @@ github.com/pion/transport/v2 v2.0.2/go.mod h1:vrz6bUbFr/cjdwbnxq8OdDDzHf7JJfGsIR
 github.com/pion/transport/v2 v2.1.0/go.mod h1:AdSw4YBZVDkZm8fpoz+fclXyQwANWmZAlDuQdctTThQ=
 github.com/pion/transport/v2 v2.2.0 h1:u5lFqFHkXLMXMzai8tixZDfVjb8eOjH35yCunhPeb1c=
 github.com/pion/transport/v2 v2.2.0/go.mod h1:AdSw4YBZVDkZm8fpoz+fclXyQwANWmZAlDuQdctTThQ=
-github.com/pion/turn/v2 v2.1.0 h1:5wGHSgGhJhP/RpabkUb/T9PdsAjkGLS6toYz5HNzoSI=
-github.com/pion/turn/v2 v2.1.0/go.mod h1:yrT5XbXSGX1VFSF31A3c1kCNB5bBZgk/uu5LET162qs=
 github.com/pion/udp/v2 v2.0.1 h1:xP0z6WNux1zWEjhC7onRA3EwwSliXqu1ElUZAQhUP54=
 github.com/pion/udp/v2 v2.0.1/go.mod h1:B7uvTMP00lzWdyMr/1PVZXtV3wpPIxBRd4Wl6AksXn8=
 github.com/pion/webrtc/v3 v3.2.1 h1:eehbYzkM6xWoH3LXoIBnZTb4TOrjwmVzI78JO1+5kgQ=
