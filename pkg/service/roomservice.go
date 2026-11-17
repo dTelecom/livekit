@@ -260,11 +260,13 @@ func (s *RoomService) UpdateParticipant(ctx context.Context, req *livekit.Update
 		return nil, err
 	}
 
+	var updated *livekit.ParticipantInfo
 	err = s.confirmExecution(func() error {
 		participant, err := s.roomStore.LoadParticipant(ctx, roomKey, livekit.ParticipantIdentity(req.Identity))
 		if err != nil {
 			return err
 		}
+		updated = participant
 		if participant != nil {
 			cond1 := false
 			if req.Name != "" {
@@ -307,8 +309,10 @@ func (s *RoomService) UpdateParticipant(ctx context.Context, req *livekit.Update
 	if err != nil {
 		return nil, err
 	}
-
-	return &livekit.ParticipantInfo{}, nil
+	if updated == nil {
+		return &livekit.ParticipantInfo{}, nil
+	}
+	return updated, nil
 }
 
 func (s *RoomService) UpdateSubscriptions(ctx context.Context, req *livekit.UpdateSubscriptionsRequest) (*livekit.UpdateSubscriptionsResponse, error) {
@@ -332,38 +336,8 @@ func (s *RoomService) UpdateSubscriptions(ctx context.Context, req *livekit.Upda
 		return nil, err
 	}
 
-	_, _, _, err = s.roomStore.LoadRoom(ctx, roomKey, false)
-	if err != nil {
-		// no room on current node
-		if err == ErrRoomNotFound {
-			return &livekit.UpdateSubscriptionsResponse{}, nil
-		}
-		return nil, err
-	}
-
-	err = s.confirmExecution(func() error {
-		participant, err := s.roomStore.LoadParticipant(ctx, roomKey, livekit.ParticipantIdentity(req.Identity))
-		if err != nil {
-			return err
-		}
-		if participant != nil && len(req.TrackSids) != 0 {
-			reqTrackSIDs := req.TrackSids
-			participantTrackSIDs := make([]string, 0, len(participant.Tracks))
-			for i := range participant.Tracks {
-				participantTrackSIDs = append(participantTrackSIDs, participant.Tracks[i].Sid)
-			}
-
-			if !utils.StringSlicesEqualIgnoreOrder(reqTrackSIDs, participantTrackSIDs) {
-				return ErrOperationFailed
-			}
-		}
-		return nil
-	})
-
-	if err != nil {
-		return nil, err
-	}
-
+	// The node stores no subscriptions to confirm against: ParticipantInfo.Tracks are the tracks
+	// the participant publishes, not the ones it subscribes to.
 	return &livekit.UpdateSubscriptionsResponse{}, nil
 }
 
@@ -462,5 +436,5 @@ func (s *RoomService) UpdateRoomMetadata(ctx context.Context, req *livekit.Updat
 		return nil, err
 	}
 
-	return &livekit.Room{}, nil
+	return room, nil
 }
