@@ -97,7 +97,7 @@ func (p *BootNodeProvider) GetBootstrapNodes(ctx context.Context) ([]p2p_common.
 	return nodes, nil
 }
 
-func (p *BootNodeProvider) refresh(ctx context.Context) error {
+func (p *BootNodeProvider) refresh(ctx context.Context, lookupIP func(string) ([]net.IP, error)) error {
 	authority, err := solana.PublicKeyFromBase58(p.RegistryAuthority)
 	if err != nil {
 		return err
@@ -120,7 +120,7 @@ func (p *BootNodeProvider) refresh(ctx context.Context) error {
 		}
 
 		var ipv4 net.IP
-		ips, _ := net.LookupIP(entryNode.Domain)
+		ips, _ := lookupIP(entryNode.Domain)
 		for _, ip := range ips {
 			ipv4 = ip.To4()
 			if ipv4 != nil {
@@ -164,7 +164,7 @@ func (p *BootNodeProvider) startRefresh() {
 func (p *BootNodeProvider) processRefresh() {
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
 	defer cancel()
-	err := p.refresh(ctx)
+	err := p.refresh(ctx, net.LookupIP)
 	if err != nil {
 		logger.Errorw("[refresh] error %s\r\n", err)
 	}

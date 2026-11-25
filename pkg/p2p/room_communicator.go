@@ -7,7 +7,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/dTelecom/p2p-database/pubsub"
+	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/livekit/protocol/logger"
 
 	p2p_common "github.com/dTelecom/p2p-database/common"
@@ -25,14 +25,23 @@ type roomCommunicatorMessage struct {
 	Payload interface{} `json:"payload"`
 }
 
+// RoomPubSub is the room-signaling surface of the shared P2P database.
+type RoomPubSub interface {
+	Subscribe(context.Context, string, p2p_common.PubSubHandler) error
+	Unsubscribe(context.Context, string) error
+	Publish(context.Context, string, interface{}) (p2p_common.Event, error)
+	GetHost() host.Host
+}
+
 type RoomCommunicatorImpl struct {
 	key string
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	closed atomic.Bool
+	ctx          context.Context
+	cancel       context.CancelFunc
+	closed       atomic.Bool
+	handlerReady chan struct{}
 
-	mainDatabase *pubsub.DB
+	mainDatabase RoomPubSub
 	logger       logger.Logger
 
 	peers           map[string]struct{}
@@ -42,7 +51,7 @@ type RoomCommunicatorImpl struct {
 	mu sync.Mutex
 }
 
-func NewRoomCommunicatorImpl(key livekit.RoomKey, mainDatabase *pubsub.DB) (*RoomCommunicatorImpl, error) {
+func NewRoomCommunicatorImpl(key livekit.RoomKey, mainDatabase RoomPubSub) (*RoomCommunicatorImpl, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	roomCommunicator := &RoomCommunicatorImpl{
@@ -51,16 +60,21 @@ func NewRoomCommunicatorImpl(key livekit.RoomKey, mainDatabase *pubsub.DB) (*Roo
 		cancel:       cancel,
 		mainDatabase: mainDatabase,
 		peers:        make(map[string]struct{}),
+		handlerReady: make(chan struct{}),
 		logger:       logger.GetLogger(),
 	}
 
-	err := roomCommunicator.init()
-
-	return roomCommunicator, err
+	if err := roomCommunicator.init(); err != nil {
+		cancel()
+		return nil, err
+	}
+	return roomCommunicator, nil
 }
 
 func (c *RoomCommunicatorImpl) Close() {
-	c.closed.Store(true)
+	if c.closed.Swap(true) {
+		return
+	}
 
 	c.cancel()
 
@@ -79,12 +93,17 @@ func (c *RoomCommunicatorImpl) Close() {
 func (c *RoomCommunicatorImpl) init() error {
 
 	roomMessagesTopic := formatRoomMessageTopic(c.key)
-	if err := c.mainDatabase.Subscribe(context.Background(), roomMessagesTopic, c.roomMessageHandler); err != nil {
+	if err := c.mainDatabase.Subscribe(c.ctx, roomMessagesTopic, c.roomMessageHandler); err != nil {
 		return errors.Wrap(err, "cannot subscribe to room messages topic")
 	}
 	c.logger.Debugw("Subscribed to room messages topic", "topic", roomMessagesTopic, "roomKey", c.key)
 
 	go func() {
+		select {
+		case <-c.handlerReady:
+		case <-c.ctx.Done():
+			return
+		}
 		for {
 			c.publishAd(roomMessagesTopic)
 			select {
@@ -105,7 +124,7 @@ func (c *RoomCommunicatorImpl) publishAd(roomMessagesTopic string) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*15)
+	ctx, cancel := context.WithTimeout(c.ctx, time.Second*15)
 	defer cancel()
 
 	data := &roomCommunicatorMessage{
@@ -138,6 +157,16 @@ func (c *RoomCommunicatorImpl) checkPeer(peerId string) {
 }
 
 func (c *RoomCommunicatorImpl) roomMessageHandler(event p2p_common.Event) {
+	// The DB consumes this subscription serially. Preserve the first event
+	// until the RTC room can handle it, or release the listener on close.
+	select {
+	case <-c.handlerReady:
+	case <-c.ctx.Done():
+		return
+	}
+	if c.closed.Load() {
+		return
+	}
 
 	if event.FromPeerId == c.mainDatabase.GetHost().ID().String() {
 		return
@@ -206,7 +235,7 @@ func (c *RoomCommunicatorImpl) SendMessage(peerId string, message interface{}) (
 		return "", fmt.Errorf("room communicator closed for room %v", c.key)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*10)
+	ctx, cancel := context.WithTimeout(c.ctx, time.Second*10)
 	defer cancel()
 
 	data := &roomCommunicatorMessage{
@@ -229,6 +258,9 @@ func (c *RoomCommunicatorImpl) OnMessage(messageHandler func(message interface{}
 	defer c.mu.Unlock()
 
 	c.messageHandlers = append(c.messageHandlers, messageHandler)
+	if len(c.messageHandlers) == 1 {
+		close(c.handlerReady)
+	}
 }
 
 func (c *RoomCommunicatorImpl) PeerId() string {

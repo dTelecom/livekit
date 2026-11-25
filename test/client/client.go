@@ -40,6 +40,7 @@ type RTCClient struct {
 	cancel             context.CancelFunc
 	me                 *webrtc.MediaEngine // optional, populated only when receiving tracks
 	subscribedTracks   map[livekit.ParticipantID][]*webrtc.TrackRemote
+	room               *livekit.Room
 	localParticipant   *livekit.ParticipantInfo
 	remoteParticipants map[livekit.ParticipantID]*livekit.ParticipantInfo
 
@@ -53,6 +54,7 @@ type RTCClient struct {
 
 	pendingTrackWriters []*TrackWriter
 	OnConnected         func()
+	OnLeave             func(*livekit.LeaveRequest)
 	OnDataReceived      func(data []byte, sid string)
 	refreshToken        string
 
@@ -104,6 +106,33 @@ func SetAuthorizationToken(header http.Header, token string) {
 }
 
 func NewRTCClient(conn *websocket.Conn) (*RTCClient, error) {
+	return newRTCClient(conn, rtcConf)
+}
+
+// NewRTCClientFromJoin initializes the peers with the ICE settings advertised by the
+// SFU when the caller has already read the initial signaling response.
+func NewRTCClientFromJoin(conn *websocket.Conn, join *livekit.JoinResponse) (*RTCClient, error) {
+	if join.GetParticipant().GetSid() == "" {
+		return nil, errors.New("missing participant in join response")
+	}
+	conf := webrtc.Configuration{}
+	for _, server := range join.GetIceServers() {
+		conf.ICEServers = append(conf.ICEServers, webrtc.ICEServer{
+			URLs: server.GetUrls(), Username: server.GetUsername(), Credential: server.GetCredential(),
+		})
+	}
+	if join.GetClientConfiguration().GetForceRelay() == livekit.ClientConfigSetting_ENABLED {
+		conf.ICETransportPolicy = webrtc.ICETransportPolicyRelay
+	}
+	c, err := newRTCClient(conn, conf)
+	if err != nil {
+		return nil, err
+	}
+	c.handleJoin(join)
+	return c, nil
+}
+
+func newRTCClient(conn *websocket.Conn, configuration webrtc.Configuration) (*RTCClient, error) {
 	var err error
 
 	c := &RTCClient{
@@ -120,7 +149,7 @@ func NewRTCClient(conn *websocket.Conn) (*RTCClient, error) {
 	c.ctx, c.cancel = context.WithCancel(context.Background())
 
 	conf := rtc.WebRTCConfig{
-		Configuration: rtcConf,
+		Configuration: configuration,
 	}
 	conf.SettingEngine.SetLite(false)
 	conf.SettingEngine.SetAnsweringDTLSRole(webrtc.DTLSRoleClient)
@@ -258,22 +287,11 @@ func (c *RTCClient) Run() error {
 		}
 		switch msg := res.Message.(type) {
 		case *livekit.SignalResponse_Join:
-			c.localParticipant = msg.Join.Participant
-			c.id = livekit.ParticipantID(msg.Join.Participant.Sid)
-			c.lock.Lock()
-			for _, p := range msg.Join.OtherParticipants {
-				c.remoteParticipants[livekit.ParticipantID(p.Sid)] = p
+			c.handleJoin(msg.Join)
+		case *livekit.SignalResponse_Leave:
+			if c.OnLeave != nil {
+				c.OnLeave(msg.Leave)
 			}
-			c.lock.Unlock()
-			// if publish only, negotiate
-			if !msg.Join.SubscriberPrimary {
-				c.subscriberAsPrimary.Store(false)
-				c.publisher.Negotiate(false)
-			} else {
-				c.subscriberAsPrimary.Store(true)
-			}
-
-			logger.Infow("join accepted, awaiting offer", "participant", msg.Join.Participant.Identity)
 		case *livekit.SignalResponse_Answer:
 			// logger.Debugw("received server answer",
 			//	"participant", c.localParticipant.Identity,
@@ -308,6 +326,10 @@ func (c *RTCClient) Run() error {
 			}
 			c.lock.Unlock()
 
+		case *livekit.SignalResponse_RoomUpdate:
+			c.lock.Lock()
+			c.room = msg.RoomUpdate.GetRoom()
+			c.lock.Unlock()
 		case *livekit.SignalResponse_TrackPublished:
 			logger.Debugw("track published", "trackID", msg.TrackPublished.Track.Name, "participant", c.localParticipant.Sid,
 				"cid", msg.TrackPublished.Cid, "trackSid", msg.TrackPublished.Track.Sid)
@@ -335,6 +357,26 @@ func (c *RTCClient) Run() error {
 			c.pongReceivedAt.Store(msg.Pong)
 		}
 	}
+}
+
+func (c *RTCClient) handleJoin(join *livekit.JoinResponse) {
+	c.localParticipant = join.Participant
+	c.id = livekit.ParticipantID(join.Participant.Sid)
+	c.lock.Lock()
+	c.room = join.Room
+	for _, p := range join.OtherParticipants {
+		c.remoteParticipants[livekit.ParticipantID(p.Sid)] = p
+	}
+	c.lock.Unlock()
+	// if publish only, negotiate
+	if !join.SubscriberPrimary {
+		c.subscriberAsPrimary.Store(false)
+		c.publisher.Negotiate(false)
+	} else {
+		c.subscriberAsPrimary.Store(true)
+	}
+
+	logger.Infow("join accepted, awaiting offer", "participant", join.Participant.Identity)
 }
 
 func (c *RTCClient) WaitUntilConnected() error {
@@ -387,6 +429,16 @@ func (c *RTCClient) ReadResponse() (*livekit.SignalResponse, error) {
 			return nil, fmt.Errorf("unexpected message received: %v", messageType)
 		}
 	}
+}
+
+// RoomMetadata returns the last room state delivered to this participant over signaling.
+func (c *RTCClient) RoomMetadata(room string) (string, bool) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	if c.room == nil || c.room.Name != room {
+		return "", false
+	}
+	return c.room.Metadata, true
 }
 
 func (c *RTCClient) SubscribedTracks() map[livekit.ParticipantID][]*webrtc.TrackRemote {
@@ -712,6 +764,12 @@ func (c *RTCClient) processTrack(track *webrtc.TrackRemote) {
 			lastUpdate = time.Now()
 		}
 	}
+}
+
+func (c *RTCClient) BytesReceivedFrom(id livekit.ParticipantID) uint64 {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	return c.bytesReceived[id]
 }
 
 func (c *RTCClient) BytesReceived() uint64 {

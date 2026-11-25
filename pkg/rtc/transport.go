@@ -119,6 +119,8 @@ const (
 	NegotiationStateRemote
 	// need to Negotiate again
 	NegotiationStateRetry
+	// waiting for the initial ICE checks before sending a restart offer
+	NegotiationStateWaitForICE
 )
 
 func (n NegotiationState) String() string {
@@ -129,6 +131,8 @@ func (n NegotiationState) String() string {
 		return "WAITING_FOR_REMOTE"
 	case NegotiationStateRetry:
 		return "RETRY"
+	case NegotiationStateWaitForICE:
+		return "WAITING_FOR_ICE_START"
 	default:
 		return fmt.Sprintf("%d", int(n))
 	}
@@ -193,8 +197,9 @@ type PCTransport struct {
 	preferTCP atomic.Bool
 	isClosed  atomic.Bool
 
-	eventChMu sync.RWMutex
-	eventCh   chan event
+	eventChMu   sync.RWMutex
+	eventCh     chan event
+	iceChecking chan struct{}
 
 	// the following should be accessed only in event processing go routine
 	cacheLocalCandidates      bool
@@ -367,6 +372,7 @@ func NewPCTransport(params TransportParams) (*PCTransport, error) {
 		debouncedNegotiate:       debounce.New(negotiationFrequency),
 		negotiationState:         NegotiationStateNone,
 		eventCh:                  make(chan event, 50),
+		iceChecking:              make(chan struct{}, 1),
 		previousTrackDescription: make(map[string]*trackDescription),
 		canReuseTransceiver:      true,
 	}
@@ -604,6 +610,10 @@ func (t *PCTransport) onICEConnectionStateChange(state webrtc.ICEConnectionState
 
 	case webrtc.ICEConnectionStateChecking:
 		t.setICEStartedAt(time.Now())
+		select {
+		case t.iceChecking <- struct{}{}:
+		default:
+		}
 	}
 }
 
@@ -1353,19 +1363,33 @@ func (t *PCTransport) postEvent(event event) {
 }
 
 func (t *PCTransport) processEvents() {
-	for event := range t.eventCh {
-		err := t.handleEvent(&event)
-		if err != nil {
-			t.params.Logger.Errorw("error handling event", err, "event", event.String())
+	defer t.params.Logger.Debugw("leaving events processor")
+	defer t.clearSignalStateCheckTimer()
+	for {
+		var ready <-chan struct{}
+		if t.negotiationState == NegotiationStateWaitForICE {
+			ready = t.iceChecking
+		}
+
+		var e event
+		var ok bool
+		select {
+		case e, ok = <-t.eventCh:
+			if !ok {
+				return
+			}
+		case <-ready:
+			t.setNegotiationState(NegotiationStateNone)
+			e.signal = signalICERestart
+		}
+		if err := t.handleEvent(&e); err != nil {
+			t.params.Logger.Errorw("error handling event", err, "event", e.String())
 			if onNegotiationFailed := t.getOnNegotiationFailed(); onNegotiationFailed != nil {
 				onNegotiationFailed()
 			}
-			break
+			return
 		}
 	}
-
-	t.clearSignalStateCheckTimer()
-	t.params.Logger.Debugw("leaving events processor")
 }
 
 func (t *PCTransport) handleEvent(e *event) error {
@@ -1602,7 +1626,7 @@ func (t *PCTransport) setupSignalStateCheckTimer() {
 }
 
 func (t *PCTransport) createAndSendOffer(options *webrtc.OfferOptions) error {
-	if t.pc.ConnectionState() == webrtc.PeerConnectionStateClosed {
+	if t.isClosed.Load() || t.pc.ConnectionState() == webrtc.PeerConnectionStateClosed {
 		t.params.Logger.Warnw("trying to send offer on closed peer connection", nil)
 		return nil
 	}
@@ -1612,8 +1636,8 @@ func (t *PCTransport) createAndSendOffer(options *webrtc.OfferOptions) error {
 		t.params.Logger.Infow("skipping negotiation, trying again later")
 		t.setNegotiationState(NegotiationStateRetry)
 		return nil
-	} else if t.negotiationState == NegotiationStateRetry {
-		// already set to retry, we can safely skip this attempt
+	} else if t.negotiationState == NegotiationStateRetry || t.negotiationState == NegotiationStateWaitForICE {
+		// The pending offer will include any new negotiation requests.
 		return nil
 	}
 
@@ -1640,6 +1664,13 @@ func (t *PCTransport) createAndSendOffer(options *webrtc.OfferOptions) error {
 	}
 
 	if options != nil && options.ICERestart {
+		// Pion starts its initial ICE checks asynchronously after SetRemoteDescription.
+		// Wait for those checks to install the first credentials before replacing them.
+		if t.pc.CurrentRemoteDescription() != nil && t.pc.ICEConnectionState() == webrtc.ICEConnectionStateNew {
+			t.setNegotiationState(NegotiationStateWaitForICE)
+			t.setupSignalStateCheckTimer()
+			return nil
+		}
 		t.clearLocalDescriptionSent()
 	}
 
@@ -1866,6 +1897,9 @@ func (t *PCTransport) handleRemoteAnswerReceived(sd *webrtc.SessionDescription) 
 }
 
 func (t *PCTransport) doICERestart() error {
+	if t.negotiationState == NegotiationStateWaitForICE {
+		return nil
+	}
 	if t.pc.ConnectionState() == webrtc.PeerConnectionStateClosed {
 		t.params.Logger.Warnw("trying to restart ICE on closed peer connection", nil)
 		return nil

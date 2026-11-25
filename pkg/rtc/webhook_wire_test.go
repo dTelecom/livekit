@@ -10,11 +10,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/gagliardetto/solana-go"
+	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v3/jwt"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/protocol/auth"
@@ -223,15 +226,16 @@ func (w *wireReceiver) all() []wirePost {
 }
 
 type wireRun struct {
-	receiver *wireReceiver
-	nodeKey  string
-	project  string
+	receiver      *wireReceiver
+	nodeKey       string
+	project       string
+	participantID livekit.ParticipantID
 }
 
 // runWireSession drives one call through the node's real code: a real participant and media tracks,
 // the real telemetry service, and the real notifier signing with a Solana key. Only the room manager's
 // two participant event calls are repeated here, with the same arguments.
-func runWireSession(t *testing.T, legacy string, paths ...string) *wireRun {
+func runWireSession(t *testing.T, expectedPosts int, legacy string, paths ...string) *wireRun {
 	initPrometheusForTest()
 	receiver := &wireReceiver{}
 	server := httptest.NewServer(receiver)
@@ -279,9 +283,12 @@ func runWireSession(t *testing.T, legacy string, paths ...string) *wireRun {
 	setRTTForTest(p, 42)
 	service.ParticipantLeft(ctx, room, p.ToProto(), true, p.ClaimGrants().AllWebHookURLs())
 
-	// the last event queued is participant_left; the pool delivers concurrently, so allow for the rest
-	time.Sleep(300 * time.Millisecond)
-	return &wireRun{receiver: receiver, nodeKey: nodeKey.PublicKey().String(), project: projectKey.PublicKey().String()}
+	if expectedPosts > 0 {
+		require.Eventually(t, func() bool { return len(receiver.all()) >= expectedPosts }, 5*time.Second, 5*time.Millisecond)
+	} else {
+		require.Never(t, func() bool { return len(receiver.all()) > 0 }, 300*time.Millisecond, 5*time.Millisecond)
+	}
+	return &wireRun{receiver: receiver, nodeKey: nodeKey.PublicKey().String(), project: projectKey.PublicKey().String(), participantID: p.ID()}
 }
 
 func decodeBody(t *testing.T, post wirePost) map[string]any {
@@ -294,12 +301,37 @@ func decodeBody(t *testing.T, post wirePost) map[string]any {
 // TestWebhookWireFormat checks what a receiver gets. With WEBHOOK_WIRE_OUT set, it also saves each
 // POST so a receiver's own parser can be run against real output.
 func TestWebhookWireFormat(t *testing.T) {
-	run := runWireSession(t, "/ingest", "/ingest", "/customer")
+	run := runWireSession(t, 12, "/ingest", "/ingest", "/customer")
 	posts := run.receiver.all()
 	require.Len(t, posts, 12, "6 events to 2 URLs: the ingest URL in both claims is posted to once")
 
 	idsByPath := map[string]map[string]string{}
+	provider := auth.NewSimpleKeyProvider(run.nodeKey, run.nodeKey)
 	for _, post := range posts {
+		require.Equal(t, "application/webhook+json", post.ContentType)
+		token, err := jwt.ParseSigned(post.Authorization)
+		require.NoError(t, err)
+		require.Len(t, token.Headers, 1)
+		require.Equal(t, string(jose.EdDSA), token.Headers[0].Algorithm)
+		verifier, err := auth.ParseAPIToken(post.Authorization)
+		require.NoError(t, err)
+		require.Equal(t, run.nodeKey, verifier.APIKey())
+		claims, err := verifier.Verify(run.nodeKey)
+		require.NoError(t, err)
+		sum := sha256.Sum256([]byte(post.Body))
+		require.Equal(t, base64.StdEncoding.EncodeToString(sum[:]), claims.Sha256)
+
+		request := httptest.NewRequest(http.MethodPost, post.Path, strings.NewReader(post.Body))
+		request.Header.Set("Authorization", post.Authorization)
+		verified, err := webhook.ReceiveWebhookEvent(request, provider)
+		require.NoError(t, err)
+		require.Equal(t, string(run.participantID), verified.GetParticipant().GetSid())
+
+		// A newline keeps the JSON valid but changes the bytes bound to this signature.
+		request.Body = io.NopCloser(strings.NewReader(post.Body + "\n"))
+		_, err = webhook.ReceiveWebhookEvent(request, provider)
+		require.ErrorIs(t, err, webhook.ErrInvalidChecksum)
+
 		body := decodeBody(t, post)
 		event := body["event"].(string)
 		if track, ok := body["track"].(map[string]any); ok {
@@ -311,16 +343,6 @@ func TestWebhookWireFormat(t *testing.T) {
 		_, duplicate := idsByPath[post.Path][event]
 		require.False(t, duplicate, "%s delivered twice to %s", event, post.Path)
 		idsByPath[post.Path][event] = body["id"].(string)
-
-		// headers and signature
-		require.Equal(t, "application/webhook+json", post.ContentType)
-		verifier, err := auth.ParseAPIToken(post.Authorization) // no Bearer prefix
-		require.NoError(t, err)
-		require.Equal(t, run.nodeKey, verifier.APIKey())
-		claims, err := verifier.Verify(run.nodeKey)
-		require.NoError(t, err)
-		sum := sha256.Sum256([]byte(post.Body))
-		require.Equal(t, base64.StdEncoding.EncodeToString(sum[:]), claims.Sha256)
 
 		// body
 		require.Regexp(t, `^EV_`, body["id"])
@@ -358,7 +380,13 @@ func TestWebhookWireFormat(t *testing.T) {
 		}
 	}
 	require.Equal(t, idsByPath["/ingest"], idsByPath["/customer"], "one id per event across URLs")
-	require.Len(t, idsByPath["/ingest"], 6)
+	for _, event := range []string{
+		webhook.EventParticipantJoined, webhook.EventParticipantLeft,
+		webhook.EventTrackPublished + "/TR_video", webhook.EventTrackPublished + "/TR_audio",
+		webhook.EventTrackUnpublished + "/TR_video", webhook.EventTrackUnpublished + "/TR_audio",
+	} {
+		require.Contains(t, idsByPath["/ingest"], event)
+	}
 
 	out := os.Getenv("WEBHOOK_WIRE_OUT")
 	if out == "" {
@@ -372,7 +400,7 @@ func TestWebhookWireFormat(t *testing.T) {
 
 // A token with only the legacy claim gets exactly today's two POSTs.
 func TestWebhookLegacyTokenFlowUnchanged(t *testing.T) {
-	run := runWireSession(t, "/legacy")
+	run := runWireSession(t, 2, "/legacy")
 	posts := run.receiver.all()
 	require.Len(t, posts, 2)
 	require.Equal(t, "/legacy", posts[0].Path)
@@ -385,5 +413,5 @@ func TestWebhookLegacyTokenFlowUnchanged(t *testing.T) {
 }
 
 func TestWebhookNoURLsNoPosts(t *testing.T) {
-	require.Empty(t, runWireSession(t, "").receiver.all())
+	require.Empty(t, runWireSession(t, 0, "").receiver.all())
 }

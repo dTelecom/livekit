@@ -3,6 +3,7 @@ package service_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"github.com/twitchtv/twirp"
@@ -25,7 +26,7 @@ func TestDeleteRoom(t *testing.T) {
 			},
 		}
 		ctx := service.WithGrants(context.Background(), grant)
-		svc.store.LoadRoomReturns(nil, nil, service.ErrRoomNotFound)
+		svc.store.LoadRoomReturns(nil, nil, nil, service.ErrRoomNotFound)
 		_, err := svc.DeleteRoom(ctx, &livekit.DeleteRoomRequest{
 			Room: "testroom",
 		})
@@ -46,60 +47,46 @@ func TestDeleteRoom(t *testing.T) {
 }
 
 func TestMetaDataLimits(t *testing.T) {
-	t.Run("metadata exceed limits", func(t *testing.T) {
-		svc := newTestRoomService(config.RoomConfig{MaxMetadataSize: 5})
-		grant := &auth.ClaimGrants{
-			Video: &auth.VideoGrant{},
-		}
-		ctx := service.WithGrants(context.Background(), grant)
-		_, err := svc.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{
-			Room:     "testroom",
-			Identity: "123",
-			Metadata: "abcdefg",
-		})
-		terr, ok := err.(twirp.Error)
-		require.True(t, ok)
-		require.Equal(t, twirp.InvalidArgument, terr.Code())
-
-		_, err = svc.UpdateRoomMetadata(ctx, &livekit.UpdateRoomMetadataRequest{
-			Room:     "testroom",
-			Metadata: "abcdefg",
-		})
-		terr, ok = err.(twirp.Error)
-		require.True(t, ok)
-		require.Equal(t, twirp.InvalidArgument, terr.Code())
+	ctx := service.WithGrants(context.Background(), &auth.ClaimGrants{
+		Video: &auth.VideoGrant{Room: "testroom", RoomAdmin: true},
 	})
-
-	notExceedsLimitsSvc := map[string]*TestRoomService{
-		"metadata noe exceeds limits": newTestRoomService(config.RoomConfig{MaxMetadataSize: 5}),
-		"metadata no limits":          newTestRoomService(config.RoomConfig{}), // no limits
-	}
-
-	for n, s := range notExceedsLimitsSvc {
-		svc := s
-		t.Run(n, func(t *testing.T) {
-			grant := &auth.ClaimGrants{
-				Video: &auth.VideoGrant{},
-			}
-			ctx := service.WithGrants(context.Background(), grant)
-			_, err := svc.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{
-				Room:     "testroom",
-				Identity: "123",
-				Metadata: "abc",
+	for _, tc := range []struct {
+		name            string
+		limit           uint32
+		metadata        string
+		wantRoomInvalid bool
+	}{
+		{"above limit", 5, "abcdef", true},
+		{"at limit", 5, "abcde", false},
+		{"unlimited", 0, "abcdef", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := newTestRoomService(config.RoomConfig{MaxMetadataSize: tc.limit})
+			svc.store.LoadRoomReturns(nil, nil, nil, service.ErrRoomNotFound)
+			t.Run("room", func(t *testing.T) {
+				_, err := svc.UpdateRoomMetadata(ctx, &livekit.UpdateRoomMetadataRequest{
+					Room: "testroom", Metadata: tc.metadata,
+				})
+				if tc.wantRoomInvalid {
+					var terr twirp.Error
+					require.ErrorAs(t, err, &terr)
+					require.Equal(t, twirp.InvalidArgument, terr.Code())
+					require.Zero(t, svc.router.WriteRoomRTCCallCount())
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, 1, svc.router.WriteRoomRTCCallCount())
+				}
 			})
-			terr, ok := err.(twirp.Error)
-			require.True(t, ok)
-			require.NotEqual(t, twirp.InvalidArgument, terr.Code())
-
-			_, err = svc.UpdateRoomMetadata(ctx, &livekit.UpdateRoomMetadataRequest{
-				Room:     "testroom",
-				Metadata: "abc",
+			t.Run("participant", func(t *testing.T) {
+				_, err := svc.UpdateParticipant(ctx, &livekit.UpdateParticipantRequest{
+					Room: "testroom", Identity: "123", Metadata: tc.metadata,
+				})
+				require.NoError(t, err)
+				require.Equal(t, 1, svc.router.WriteParticipantRTCCallCount())
+				_, _, _, msg := svc.router.WriteParticipantRTCArgsForCall(0)
+				require.Equal(t, tc.metadata, msg.GetUpdateParticipant().GetMetadata())
 			})
-			terr, ok = err.(twirp.Error)
-			require.True(t, ok)
-			require.NotEqual(t, twirp.InvalidArgument, terr.Code())
 		})
-
 	}
 }
 
@@ -108,7 +95,7 @@ func newTestRoomService(conf config.RoomConfig) *TestRoomService {
 	allocator := &servicefakes.FakeRoomAllocator{}
 	store := &servicefakes.FakeServiceStore{}
 	svc, err := service.NewRoomService(conf,
-		config.APIConfig{ExecutionTimeout: 2},
+		config.APIConfig{ExecutionTimeout: time.Second, CheckInterval: time.Millisecond},
 		router, allocator, store, nil)
 	if err != nil {
 		panic(err)

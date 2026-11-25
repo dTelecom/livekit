@@ -317,8 +317,7 @@ func (p *RelayedParticipantImpl) IsReady() bool {
 }
 
 func (p *RelayedParticipantImpl) IsDisconnected() bool {
-	// TODO implement me
-	return false
+	return p.State() == livekit.ParticipantInfo_DISCONNECTED
 }
 
 func (p *RelayedParticipantImpl) IsTransportFailed() bool {

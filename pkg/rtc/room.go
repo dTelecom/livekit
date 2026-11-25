@@ -46,6 +46,11 @@ type broadcastOptions struct {
 	immediate  bool
 }
 
+type batchedParticipantUpdate struct {
+	info        *livekit.ParticipantInfo
+	connectedAt time.Time // ParticipantInfo.JoinedAt has only second precision.
+}
+
 type Room struct {
 	lock sync.RWMutex
 
@@ -68,7 +73,7 @@ type Room struct {
 	bufferFactory             *buffer.FactoryOfBufferFactory
 
 	// batch update participant info for non-publishers
-	batchedUpdates   map[livekit.ParticipantIdentity]*livekit.ParticipantInfo
+	batchedUpdates   map[livekit.ParticipantIdentity]batchedParticipantUpdate
 	batchedUpdatesMu sync.Mutex
 
 	// time the first participant joined the room
@@ -119,7 +124,7 @@ func NewRoom(
 		participantOpts:           make(map[livekit.ParticipantIdentity]*ParticipantOptions),
 		participantRequestSources: make(map[livekit.ParticipantIdentity]routing.MessageSource),
 		bufferFactory:             buffer.NewFactoryOfBufferFactory(config.Receiver.PacketBufferSize),
-		batchedUpdates:            make(map[livekit.ParticipantIdentity]*livekit.ParticipantInfo),
+		batchedUpdates:            make(map[livekit.ParticipantIdentity]batchedParticipantUpdate),
 		closed:                    make(chan struct{}),
 	}
 	if r.protoRoom.EmptyTimeout == 0 {
@@ -982,7 +987,7 @@ func (r *Room) broadcastParticipantState(p types.LocalParticipant, opts broadcas
 		return
 	}
 
-	updates := r.pushAndDequeueUpdates(pi, opts.immediate)
+	updates := r.pushAndDequeueUpdates(pi, p.ConnectedAt(), opts.immediate)
 	r.sendParticipantUpdates(updates)
 }
 
@@ -1044,30 +1049,29 @@ func (r *Room) sendSpeakerChanges(speakers []*livekit.SpeakerInfo) {
 // * subscriber-only updates will be queued for batch updates
 // * publisher & immediate updates will be returned without queuing
 // * when the SID changes, it will return both updates, with the earlier participant set to disconnected
-func (r *Room) pushAndDequeueUpdates(pi *livekit.ParticipantInfo, isImmediate bool) []*livekit.ParticipantInfo {
+func (r *Room) pushAndDequeueUpdates(pi *livekit.ParticipantInfo, connectedAt time.Time, isImmediate bool) []*livekit.ParticipantInfo {
 	r.batchedUpdatesMu.Lock()
 	defer r.batchedUpdatesMu.Unlock()
 
 	var updates []*livekit.ParticipantInfo
 	identity := livekit.ParticipantIdentity(pi.Identity)
-	existing := r.batchedUpdates[identity]
 	shouldSend := isImmediate || pi.IsPublisher
 
-	if existing != nil {
-		if pi.Sid == existing.Sid {
+	if existing, ok := r.batchedUpdates[identity]; ok {
+		if pi.Sid == existing.info.Sid {
 			// same participant session
-			if pi.Version < existing.Version {
+			if pi.Version < existing.info.Version {
 				// out of order update
 				return nil
 			}
 		} else {
 			// different participant sessions
-			if existing.JoinedAt < pi.JoinedAt {
+			if existing.connectedAt.Before(connectedAt) {
 				// existing is older, synthesize a DISCONNECT for older and
 				// send immediately along with newer session to signal switch
 				shouldSend = true
-				existing.State = livekit.ParticipantInfo_DISCONNECTED
-				updates = append(updates, existing)
+				existing.info.State = livekit.ParticipantInfo_DISCONNECTED
+				updates = append(updates, existing.info)
 			} else {
 				// older session update, newer session has already become active, so nothing to do
 				return nil
@@ -1081,7 +1085,7 @@ func (r *Room) pushAndDequeueUpdates(pi *livekit.ParticipantInfo, isImmediate bo
 		updates = append(updates, pi)
 	} else {
 		// enqueue for batch
-		r.batchedUpdates[identity] = pi
+		r.batchedUpdates[identity] = batchedParticipantUpdate{info: pi, connectedAt: connectedAt}
 	}
 
 	return updates
@@ -1098,7 +1102,7 @@ func (r *Room) subscriberBroadcastWorker() {
 		case <-ticker.C:
 			r.batchedUpdatesMu.Lock()
 			updatesMap := r.batchedUpdates
-			r.batchedUpdates = make(map[livekit.ParticipantIdentity]*livekit.ParticipantInfo)
+			r.batchedUpdates = make(map[livekit.ParticipantIdentity]batchedParticipantUpdate)
 			r.batchedUpdatesMu.Unlock()
 
 			if len(updatesMap) == 0 {
@@ -1106,8 +1110,8 @@ func (r *Room) subscriberBroadcastWorker() {
 			}
 
 			updates := make([]*livekit.ParticipantInfo, 0, len(updatesMap))
-			for _, pi := range updatesMap {
-				updates = append(updates, pi)
+			for _, update := range updatesMap {
+				updates = append(updates, update.info)
 			}
 			r.sendParticipantUpdates(updates)
 		}

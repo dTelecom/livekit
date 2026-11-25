@@ -656,6 +656,8 @@ func (r *RoomManager) getOrCreateRoom(ctx context.Context, roomKey livekit.RoomK
 		}
 	}
 
+	// Register signaling before initiating outgoing offers. The first handler
+	// makes this room visible to peers and releases any early incoming signal.
 	roomCommunicator.OnMessage(func(message interface{}, fromPeerId string, eventId string) {
 		replyTo, signal, err := unpackSignalPeerMessage(message)
 		if err != nil {

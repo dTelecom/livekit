@@ -2,48 +2,31 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 )
 
-type testStruct struct {
-	configFileName string
-	configBody     string
-
-	expectedError      error
-	expectedConfigBody string
-}
-
 func TestGetConfigString(t *testing.T) {
-	tests := []testStruct{
-		{"", "", nil, ""},
-		{"", "configBody", nil, "configBody"},
-		{"file", "configBody", nil, "configBody"},
-		{"file", "", nil, "fileContent"},
-	}
-	for _, test := range tests {
-		func() {
-			writeConfigFile(test, t)
-			defer os.Remove(test.configFileName)
-
-			configBody, err := getConfigString(test.configFileName, test.configBody)
-			require.Equal(t, test.expectedError, err)
-			require.Equal(t, test.expectedConfigBody, configBody)
-		}()
+	configFile := filepath.Join(t.TempDir(), "config.yaml")
+	require.NoError(t, os.WriteFile(configFile, []byte("fileContent"), 0o644))
+	for _, tt := range []struct {
+		file, body, want string
+	}{
+		{"", "", ""},
+		{"", "configBody", "configBody"},
+		{configFile, "configBody", "configBody"},
+		{configFile, "", "fileContent"},
+	} {
+		body, err := getConfigString(tt.file, tt.body)
+		require.NoError(t, err)
+		require.Equal(t, tt.want, body)
 	}
 }
 
 func TestShouldReturnErrorIfConfigFileDoesNotExist(t *testing.T) {
-	configBody, err := getConfigString("notExistingFile", "")
+	configBody, err := getConfigString(filepath.Join(t.TempDir(), "missing.yaml"), "")
 	require.Error(t, err)
 	require.Empty(t, configBody)
-}
-
-func writeConfigFile(test testStruct, t *testing.T) {
-	if test.configFileName != "" {
-		d1 := []byte(test.expectedConfigBody)
-		err := os.WriteFile(test.configFileName, d1, 0o644)
-		require.NoError(t, err)
-	}
 }

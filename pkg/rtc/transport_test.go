@@ -2,7 +2,9 @@ package rtc
 
 import (
 	"fmt"
+	"net"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -227,76 +229,129 @@ func TestFirstOfferMissedDuringICERestart(t *testing.T) {
 }
 
 func TestFirstAnswerMissedDuringICERestart(t *testing.T) {
-	params := TransportParams{
-		ParticipantID:       "id",
-		ParticipantIdentity: "identity",
-		Config:              &WebRTCConfig{},
-		IsOfferer:           true,
-	}
-	transportA, err := NewPCTransport(params)
-	require.NoError(t, err)
-	_, err = transportA.pc.CreateDataChannel("test", nil)
-	require.NoError(t, err)
+	for _, tc := range []struct {
+		name         string
+		holdChecking bool
+		closePending bool
+	}{
+		{name: "normal"},
+		{name: "initial route unavailable", holdChecking: true},
+		{name: "closed while waiting for ICE startup", holdChecking: true, closePending: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			conf := &WebRTCConfig{}
+			var allowCandidates atomic.Bool
+			if tc.holdChecking {
+				// Neither peer can connect using the first ICE generation.
+				conf.SettingEngine.SetIPFilter(func(net.IP) bool { return allowCandidates.Load() })
+			}
+			params := TransportParams{
+				ParticipantID: "id", ParticipantIdentity: "identity", Config: conf, IsOfferer: true,
+			}
+			a, err := NewPCTransport(params)
+			require.NoError(t, err)
+			t.Cleanup(a.Close)
+			dc, err := a.pc.CreateDataChannel(ReliableDataChannel, nil)
+			require.NoError(t, err)
+			params.IsOfferer = false
+			b, err := NewPCTransport(params)
+			require.NoError(t, err)
+			t.Cleanup(b.Close)
+			handleICEExchange(t, a, b)
 
-	paramsB := params
-	paramsB.IsOfferer = false
-	transportB, err := NewPCTransport(paramsB)
-	require.NoError(t, err)
+			release := make(chan struct{})
+			releaseChecking := sync.OnceFunc(func() { close(release) })
+			t.Cleanup(releaseChecking)
+			waiting := make(chan struct{}, 1)
+			if tc.holdChecking {
+				// Pion invokes this handler before publishing Checking on the PeerConnection.
+				a.pc.SCTP().Transport().ICETransport().OnConnectionStateChange(func(state webrtc.ICETransportState) {
+					if state == webrtc.ICETransportStateChecking {
+						<-release
+					}
+				})
+				a.OnNegotiationStateChanged(func(state NegotiationState) {
+					if state == NegotiationStateWaitForICE {
+						waiting <- struct{}{}
+					}
+				})
+			}
 
-	// exchange ICE
-	handleICEExchange(t, transportA, transportB)
-
-	// first answer missed
-	var firstAnswerReceived atomic.Bool
-	transportB.OnAnswer(func(sd webrtc.SessionDescription) error {
-		if firstAnswerReceived.Load() {
-			transportA.HandleRemoteDescription(sd)
-		} else {
-			// do not send first answer so that remote misses the first answer
-			firstAnswerReceived.Store(true)
-		}
-		return nil
-	})
-	transportA.OnOffer(func(sd webrtc.SessionDescription) error {
-		transportB.HandleRemoteDescription(sd)
-		return nil
-	})
-
-	transportA.Negotiate(true)
-	require.Eventually(t, func() bool {
-		return transportB.pc.SignalingState() == webrtc.SignalingStateStable && firstAnswerReceived.Load()
-	}, time.Second, 10*time.Millisecond, "transportB signaling state did not go to stable")
-
-	// set offer/answer with restart ICE, will negotiate twice,
-	// first one is recover from missed offer
-	// second one is restartICE
-	var offerCount atomic.Int32
-	transportA.OnOffer(func(sd webrtc.SessionDescription) error {
-		offerCount.Inc()
-
-		// the second offer is a ice restart offer, so we wait transportB complete the ice gathering
-		if transportB.pc.ICEGatheringState() == webrtc.ICEGatheringStateGathering {
+			messages := make(chan string, 1)
+			b.OnDataPacket(func(_ livekit.DataPacket_Kind, data []byte) { messages <- string(data) })
+			restartOffer := make(chan struct{})
+			var answers, offers atomic.Int32
+			b.OnAnswer(func(sd webrtc.SessionDescription) error {
+				if answers.Inc() > 1 {
+					a.HandleRemoteDescription(sd)
+				}
+				return nil
+			})
+			a.OnOffer(func(sd webrtc.SessionDescription) error {
+				if offers.Inc() == 3 {
+					close(restartOffer)
+				}
+				b.HandleRemoteDescription(sd)
+				return nil
+			})
+			a.Negotiate(true)
 			require.Eventually(t, func() bool {
-				return transportB.pc.ICEGatheringState() == webrtc.ICEGatheringStateComplete
-			}, 10*time.Second, time.Millisecond*10)
-		}
+				return answers.Load() == 1 &&
+					a.pc.ICEGatheringState() == webrtc.ICEGatheringStateComplete &&
+					b.pc.ICEGatheringState() == webrtc.ICEGatheringStateComplete
+			}, testutils.ConnectTimeout, 10*time.Millisecond)
+			if tc.holdChecking {
+				require.NotContains(t, a.pc.LocalDescription().SDP, "a=candidate:")
+				require.NotContains(t, b.pc.LocalDescription().SDP, "a=candidate:")
+			}
+			allowCandidates.Store(true)
+			a.ICERestart()
 
-		transportB.HandleRemoteDescription(sd)
-		return nil
-	})
+			if tc.holdChecking {
+				select {
+				case <-waiting:
+				case <-restartOffer:
+					t.Fatal("restart offer preceded initial ICE startup")
+				case <-time.After(testutils.ConnectTimeout):
+					t.Fatal("offerer did not defer the restart during initial ICE startup")
+				}
+				require.EqualValues(t, 2, offers.Load(), "expected only the original and recovery offers")
+				if tc.closePending {
+					closed := make(chan struct{})
+					go func() { a.Close(); close(closed) }()
+					require.Eventually(t, a.isClosed.Load, time.Second, time.Millisecond)
+					releaseChecking()
+					select {
+					case <-closed:
+					case <-time.After(testutils.ConnectTimeout):
+						t.Fatal("offerer did not close")
+					}
+					require.EqualValues(t, 2, offers.Load(), "closed offerer emitted a restart")
+					return
+				}
+				releaseChecking()
+			}
 
-	// first establish connection
-	transportA.ICERestart()
-
-	// ensure we are connected
-	require.Eventually(t, func() bool {
-		return transportA.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected &&
-			transportB.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected &&
-			offerCount.Load() == 2
-	}, testutils.ConnectTimeout, 10*time.Millisecond, "transport did not connect")
-
-	transportA.Close()
-	transportB.Close()
+			require.Eventually(t, func() bool {
+				return offers.Load() == 3 && answers.Load() == 3 &&
+					a.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected &&
+					b.pc.ICEConnectionState() == webrtc.ICEConnectionStateConnected &&
+					dc.ReadyState() == webrtc.DataChannelStateOpen
+			}, testutils.ConnectTimeout, 10*time.Millisecond, "restart exchange or data channel did not complete")
+			for _, peer := range []*PCTransport{a, b} {
+				pair, err := peer.getSelectedPair()
+				require.NoError(t, err)
+				require.NotNil(t, pair)
+			}
+			require.NoError(t, dc.Send([]byte("after restart")))
+			select {
+			case message := <-messages:
+				require.Equal(t, "after restart", message)
+			case <-time.After(testutils.ConnectTimeout):
+				t.Fatal("no data delivered after ICE restart")
+			}
+		})
+	}
 }
 
 func TestNegotiationFailed(t *testing.T) {

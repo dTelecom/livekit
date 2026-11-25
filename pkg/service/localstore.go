@@ -19,7 +19,7 @@ import (
 // encapsulates CRUD operations for room settings
 type LocalStore struct {
 	currentNodeId livekit.NodeID
-	db            *pubsub.DB
+	db            p2p.RoomPubSub
 
 	// map of roomKey => room
 	rooms        map[livekit.RoomKey]*livekit.Room
@@ -55,21 +55,19 @@ func (s *LocalStore) StoreRoom(_ context.Context, room *livekit.Room, roomKey li
 	}
 
 	s.lock.Lock()
-	s.rooms[roomKey] = room
-	s.roomInternal[roomKey] = internal
+	defer s.lock.Unlock()
 	if _, ok := s.roomCommunicators[roomKey]; !ok {
-		if roomCommunicator, err := p2p.NewRoomCommunicatorImpl(roomKey, s.db); err != nil {
-			s.lock.Unlock()
-			roomCommunicator.Close()
+		roomCommunicator, err := p2p.NewRoomCommunicatorImpl(roomKey, s.db)
+		if err != nil {
 			return errors.Wrap(err, "cannot create room communicator")
-		} else {
-			s.roomCommunicators[roomKey] = roomCommunicator
-			logger.Debugw("New room communicator has been created")
 		}
+		s.roomCommunicators[roomKey] = roomCommunicator
+		logger.Debugw("New room communicator has been created")
 	} else {
 		logger.Debugw("Room communicator already exists")
 	}
-	s.lock.Unlock()
+	s.rooms[roomKey] = room
+	s.roomInternal[roomKey] = internal
 
 	return nil
 }

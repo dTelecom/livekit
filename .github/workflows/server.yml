@@ -1,0 +1,54 @@
+name: Server build and tests
+
+on:
+  pull_request:
+  push:
+    branches: [dtelecom-db]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  server:
+    strategy:
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+        compiler: [baseline, '1.27.4']
+        include:
+          - os: ubuntu-24.04
+            target: buildLinux
+            binary: bin/livekit-server-amd64
+          - os: macos-15
+            target: build
+            binary: bin/livekit-server
+    runs-on: ${{ matrix.os }}
+    env:
+      GOTOOLCHAIN: local
+      GOWORK: 'off'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Select compiler
+        id: compiler
+        env:
+          REQUESTED: ${{ matrix.compiler }}
+        run: |
+          version="$REQUESTED"
+          if [ "$version" = baseline ]; then version=$(cat .go-version); fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version: ${{ steps.compiler.outputs.version }}
+      - name: Build server
+        env:
+          TARGET: ${{ matrix.target }}
+          BINARY: ${{ matrix.binary }}
+          VERSION: ${{ steps.compiler.outputs.version }}
+        run: |
+          go run -mod=readonly github.com/magefile/mage "$TARGET"
+          go version -m "$BINARY"
+          test "$(go version "$BINARY" | awk '{print $NF}')" = "go$VERSION"
+      - name: Run short tests
+        run: go run -mod=readonly github.com/magefile/mage test
+      - name: Verify module pins and generated sources
+        run: git diff --exit-code -- go.mod go.sum pkg

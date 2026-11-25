@@ -19,72 +19,48 @@ import (
 )
 
 const (
-	goChecksumFile = ".checksumgo"
-	imageName      = "livekit/livekit-server"
+	imageName = "livekit/livekit-server"
+	// The pinned generators use an x/tools release compatible with Go 1.23.
+	generatorToolchain = "GOTOOLCHAIN=go1.23.8"
 )
 
-// Default target to run when none is specified
-// If not set, running mage will list available targets
 var Default = Build
-var checksummer = mageutil.NewChecksummer(".", goChecksumFile, ".go", ".mod")
 
-func init() {
-	checksummer.IgnoredPaths = []string{
-		"pkg/service/wire_gen.go",
-		"pkg/rtc/types/typesfakes",
-	}
-}
-
-// explicitly reinstall all deps
+// Deps installs the Wire version selected by the repository's module graph.
 func Deps() error {
-	return installTools(true)
+	return runGo([]string{generatorToolchain}, "install", "-mod=readonly", "github.com/google/wire/cmd/wire")
 }
 
-// builds LiveKit server
+// Build builds the server for the host using the checked-in generated sources.
 func Build() error {
-	mg.Deps(generateWire)
-	if !checksummer.IsChanged() {
-		fmt.Println("up to date")
-		return nil
-	}
-
-	fmt.Println("building...")
-	if err := os.MkdirAll("bin", 0755); err != nil {
-		return err
-	}
-	if err := mageutil.RunDir(context.Background(), "cmd/server", "go build -o ../../bin/livekit-server"); err != nil {
-		return err
-	}
-
-	checksummer.WriteChecksum()
-	return nil
+	return buildServer("bin/livekit-server")
 }
 
-// builds binary that runs on linux amd64
+// BuildLinux builds the static Linux/amd64 server.
 func BuildLinux() error {
-	mg.Deps(generateWire)
-	if !checksummer.IsChanged() {
-		fmt.Println("up to date")
-		return nil
-	}
+	return buildServer("bin/livekit-server-amd64", "GOOS=linux", "GOARCH=amd64", "CGO_ENABLED=0")
+}
 
-	fmt.Println("building...")
+func buildServer(output string, env ...string) error {
 	if err := os.MkdirAll("bin", 0755); err != nil {
 		return err
 	}
-	cmd := mageutil.CommandDir(context.Background(), "cmd/server", "go build -buildvcs=false -o ../../bin/livekit-server-amd64")
-	cmd.Env = []string{
-		"GOOS=linux",
-		"GOARCH=amd64",
-		"HOME=" + os.Getenv("HOME"),
-		"GOPATH=" + os.Getenv("GOPATH"),
-	}
-	if err := cmd.Run(); err != nil {
-		return err
-	}
+	return runGo(env, "build", "-mod=readonly", "-o", output, "./cmd/server")
+}
 
-	checksummer.WriteChecksum()
-	return nil
+func runGo(env []string, args ...string) error {
+	cmd := exec.Command(mg.GoCmd(), args...)
+	cmd.Env = os.Environ()
+	if os.Getenv("GOTOOLCHAIN") == "" {
+		version, err := os.ReadFile(".go-version")
+		if err != nil {
+			return err
+		}
+		cmd.Env = append(cmd.Env, "GOTOOLCHAIN=go"+strings.TrimSpace(string(version)))
+	}
+	cmd.Env = append(cmd.Env, env...)
+	mageutil.ConnectStd(cmd)
+	return cmd.Run()
 }
 
 func Deadlock() error {
@@ -147,67 +123,17 @@ func PublishDocker() error {
 
 // run unit tests, skipping integration
 func Test() error {
-	mg.Deps(generateWire, setULimit)
-	return mageutil.Run(context.Background(), "go test -short ./... -count=1")
-}
-
-// run all tests including integration
-func TestAll() error {
-	mg.Deps(generateWire, setULimit)
-	return mageutil.Run(context.Background(), "go test ./... -count=1 -timeout=4m -v")
+	mg.Deps(setULimit)
+	return runGo(nil, "test", "-mod=readonly", "-short", "-count=1", "./...")
 }
 
 // cleans up builds
 func Clean() {
 	fmt.Println("cleaning...")
 	os.RemoveAll("bin")
-	os.Remove(goChecksumFile)
 }
 
-// regenerate code
+// Generate runs the repository's pinned generators when explicitly requested.
 func Generate() error {
-	mg.Deps(installDeps, generateWire)
-
-	fmt.Println("generating...")
-	return mageutil.Run(context.Background(), "go generate ./...")
-}
-
-// code generation for wiring
-func generateWire() error {
-	mg.Deps(installDeps)
-	if !checksummer.IsChanged() {
-		return nil
-	}
-
-	fmt.Println("wiring...")
-
-	wire, err := mageutil.GetToolPath("wire")
-	if err != nil {
-		return err
-	}
-	cmd := exec.Command(wire)
-	cmd.Dir = "pkg/service"
-	mageutil.ConnectStd(cmd)
-	if err := cmd.Run(); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// implicitly install deps
-func installDeps() error {
-	return installTools(false)
-}
-
-func installTools(force bool) error {
-	tools := map[string]string{
-		"github.com/google/wire/cmd/wire": "latest",
-	}
-	for t, v := range tools {
-		if err := mageutil.InstallTool(t, v, force); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runGo([]string{generatorToolchain}, "generate", "./...")
 }

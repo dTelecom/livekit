@@ -270,7 +270,7 @@ func TestPushAndDequeueUpdates(t *testing.T) {
 			pi:       subscriber1v2,
 			existing: subscriber1v1,
 			validate: func(t *testing.T, rm *Room, _ []*livekit.ParticipantInfo) {
-				queued := rm.batchedUpdates[livekit.ParticipantIdentity(identity)]
+				queued := rm.batchedUpdates[livekit.ParticipantIdentity(identity)].info
 				require.NotNil(t, queued)
 				requirePIEquals(t, subscriber1v2, queued)
 			},
@@ -282,7 +282,7 @@ func TestPushAndDequeueUpdates(t *testing.T) {
 			immediate: true,
 			expected:  []*livekit.ParticipantInfo{subscriber1v2},
 			validate: func(t *testing.T, rm *Room, _ []*livekit.ParticipantInfo) {
-				queued := rm.batchedUpdates[livekit.ParticipantIdentity(identity)]
+				queued := rm.batchedUpdates[livekit.ParticipantIdentity(identity)].info
 				require.Nil(t, queued)
 			},
 		},
@@ -291,7 +291,7 @@ func TestPushAndDequeueUpdates(t *testing.T) {
 			pi:       subscriber1v1,
 			existing: subscriber1v2,
 			validate: func(t *testing.T, rm *Room, updates []*livekit.ParticipantInfo) {
-				queued := rm.batchedUpdates[livekit.ParticipantIdentity(identity)]
+				queued := rm.batchedUpdates[livekit.ParticipantIdentity(identity)].info
 				requirePIEquals(t, subscriber1v2, queued)
 			},
 		},
@@ -322,12 +322,15 @@ func TestPushAndDequeueUpdates(t *testing.T) {
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			rm := newRoomWithParticipants(t, testRoomOpts{num: 1})
+			rm := &Room{batchedUpdates: make(map[livekit.ParticipantIdentity]batchedParticipantUpdate)}
 			if tc.existing != nil {
 				// clone the existing value since it can be modified when setting to disconnected
-				rm.batchedUpdates[livekit.ParticipantIdentity(tc.existing.Identity)] = proto.Clone(tc.existing).(*livekit.ParticipantInfo)
+				rm.batchedUpdates[livekit.ParticipantIdentity(tc.existing.Identity)] = batchedParticipantUpdate{
+					info:        proto.Clone(tc.existing).(*livekit.ParticipantInfo),
+					connectedAt: time.Unix(tc.existing.JoinedAt, 0),
+				}
 			}
-			updates := rm.pushAndDequeueUpdates(tc.pi, tc.immediate)
+			updates := rm.pushAndDequeueUpdates(tc.pi, time.Unix(tc.pi.JoinedAt, 0), tc.immediate)
 			require.Equal(t, len(tc.expected), len(updates))
 			for i, item := range tc.expected {
 				requirePIEquals(t, item, updates[i])
@@ -338,6 +341,55 @@ func TestPushAndDequeueUpdates(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestParticipantUpdatesForSessionsInTheSameSecond(t *testing.T) {
+	firstStart := time.Unix(100, 100)
+	replacementStart := firstStart.Add(time.Millisecond)
+	session := func(sid string, connectedAt time.Time, state livekit.ParticipantInfo_State) *typesfakes.FakeLocalParticipant {
+		p := &typesfakes.FakeLocalParticipant{}
+		p.ConnectedAtReturns(connectedAt)
+		p.ToProtoReturns(&livekit.ParticipantInfo{
+			Identity: "publisher", Sid: sid, JoinedAt: connectedAt.Unix(), State: state,
+		})
+		return p
+	}
+
+	t.Run("replacement follows the queued disconnect immediately", func(t *testing.T) {
+		r := &Room{batchedUpdates: make(map[livekit.ParticipantIdentity]batchedParticipantUpdate)}
+		var updates []*livekit.ParticipantInfo
+		r.OnSendParticipantUpdates(func(batch []*livekit.ParticipantInfo) { updates = append(updates, batch...) })
+		first := session("first", firstStart, livekit.ParticipantInfo_DISCONNECTED)
+		replacement := session("replacement", replacementStart, livekit.ParticipantInfo_JOINED)
+
+		r.broadcastParticipantState(first, broadcastOptions{})
+		require.Empty(t, updates)
+		r.broadcastParticipantState(replacement, broadcastOptions{})
+		require.Len(t, updates, 2)
+		require.Equal(t, "first", updates[0].Sid)
+		require.Equal(t, livekit.ParticipantInfo_DISCONNECTED, updates[0].State)
+		require.Equal(t, "replacement", updates[1].Sid)
+		require.Equal(t, livekit.ParticipantInfo_JOINED, updates[1].State)
+		require.Equal(t, updates[0].JoinedAt, updates[1].JoinedAt)
+		require.Empty(t, r.batchedUpdates)
+	})
+
+	t.Run("late updates from the first session leave the queued replacement intact", func(t *testing.T) {
+		r := &Room{batchedUpdates: make(map[livekit.ParticipantIdentity]batchedParticipantUpdate)}
+		var updates []*livekit.ParticipantInfo
+		r.OnSendParticipantUpdates(func(batch []*livekit.ParticipantInfo) { updates = append(updates, batch...) })
+		replacement := session("replacement", replacementStart, livekit.ParticipantInfo_ACTIVE)
+		first := session("first", firstStart, livekit.ParticipantInfo_DISCONNECTED)
+
+		r.broadcastParticipantState(replacement, broadcastOptions{})
+		r.broadcastParticipantState(first, broadcastOptions{})
+		r.broadcastParticipantState(first, broadcastOptions{immediate: true})
+		require.Empty(t, updates)
+		r.broadcastParticipantState(replacement, broadcastOptions{immediate: true})
+		require.Len(t, updates, 1)
+		require.Equal(t, "replacement", updates[0].Sid)
+		require.Equal(t, livekit.ParticipantInfo_ACTIVE, updates[0].State)
+	})
 }
 
 func TestRoomClosure(t *testing.T) {
@@ -544,10 +596,22 @@ func TestActiveSpeakers(t *testing.T) {
 func TestDataChannel(t *testing.T) {
 	t.Parallel()
 
+	// Production rooms distinguish concrete local participants from relayed peers.
+	// Supply the local recipients through the same interface used by the broadcaster.
+	newLocalRoom := func(n int) (*typesfakes.FakeRoom, []types.LocalParticipant) {
+		room := &typesfakes.FakeRoom{}
+		participants := make([]types.LocalParticipant, 0, n)
+		for i := 0; i < n; i++ {
+			p := newMockParticipant(livekit.ParticipantIdentity(fmt.Sprintf("p%d", i)), types.CurrentProtocol, false, true)
+			p.StateReturns(livekit.ParticipantInfo_ACTIVE)
+			participants = append(participants, p)
+		}
+		room.GetLocalParticipantsReturns(participants)
+		return room, participants
+	}
+
 	t.Run("participants should receive data", func(t *testing.T) {
-		rm := newRoomWithParticipants(t, testRoomOpts{num: 3})
-		defer rm.Close()
-		participants := rm.GetParticipants()
+		rm, participants := newLocalRoom(3)
 		p := participants[0].(*typesfakes.FakeLocalParticipant)
 
 		packet := livekit.DataPacket{
@@ -559,7 +623,7 @@ func TestDataChannel(t *testing.T) {
 				},
 			},
 		}
-		p.OnDataPacketArgsForCall(0)(p, &packet)
+		BroadcastDataPacketForRoom(rm, p, &packet, logger.GetLogger())
 
 		// ensure everyone has received the packet
 		for _, op := range participants {
@@ -575,9 +639,7 @@ func TestDataChannel(t *testing.T) {
 	})
 
 	t.Run("only one participant should receive the data", func(t *testing.T) {
-		rm := newRoomWithParticipants(t, testRoomOpts{num: 4})
-		defer rm.Close()
-		participants := rm.GetParticipants()
+		rm, participants := newLocalRoom(4)
 		p := participants[0].(*typesfakes.FakeLocalParticipant)
 		p1 := participants[1].(*typesfakes.FakeLocalParticipant)
 
@@ -591,7 +653,7 @@ func TestDataChannel(t *testing.T) {
 				},
 			},
 		}
-		p.OnDataPacketArgsForCall(0)(p, &packet)
+		BroadcastDataPacketForRoom(rm, p, &packet, logger.GetLogger())
 
 		// only p1 should receive the data
 		for _, op := range participants {
@@ -606,29 +668,19 @@ func TestDataChannel(t *testing.T) {
 	})
 
 	t.Run("publishing disallowed", func(t *testing.T) {
-		rm := newRoomWithParticipants(t, testRoomOpts{num: 2})
-		defer rm.Close()
-		participants := rm.GetParticipants()
-		p := participants[0].(*typesfakes.FakeLocalParticipant)
-		p.CanPublishDataReturns(false)
+		p := newParticipantForTestWithOpts("sender", &participantOpts{
+			permissions: &livekit.ParticipantPermission{CanPublishData: false},
+		})
+		defer p.Close(false, types.ParticipantCloseReasonClientRequestLeave)
+		p.OnDataPacket(func(types.LocalParticipant, *livekit.DataPacket) {
+			t.Error("forwarded data from a participant without permission")
+		})
 
-		packet := livekit.DataPacket{
-			Kind: livekit.DataPacket_RELIABLE,
-			Value: &livekit.DataPacket_User{
-				User: &livekit.UserPacket{
-					Payload: []byte{},
-				},
-			},
-		}
-		if p.CanPublishData() {
-			p.OnDataPacketArgsForCall(0)(p, &packet)
-		}
-
-		// no one should've been sent packet
-		for _, op := range participants {
-			fp := op.(*typesfakes.FakeLocalParticipant)
-			require.Zero(t, fp.SendDataPacketCallCount())
-		}
+		data, err := proto.Marshal(&livekit.DataPacket{
+			Value: &livekit.DataPacket_User{User: &livekit.UserPacket{Payload: []byte("message")}},
+		})
+		require.NoError(t, err)
+		p.onDataMessage(livekit.DataPacket_RELIABLE, data)
 	})
 }
 

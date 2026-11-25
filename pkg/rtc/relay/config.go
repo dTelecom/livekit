@@ -93,45 +93,6 @@ func NewWebRTCRelayConfig(conf *config.Config, externalIP string) (*WebRTCRelayC
 		rtcConf.PacketBufferSize = 500
 	}
 
-	var relayUdpMux ice.UDPMux
-	if rtcConf.UdpPort != 0 {
-		opts := []ice.UDPMuxFromPortOption{
-			ice.UDPMuxFromPortWithReadBufferSize(defaultUDPBufferSize),
-			ice.UDPMuxFromPortWithWriteBufferSize(defaultUDPBufferSize),
-			ice.UDPMuxFromPortWithLogger(s.LoggerFactory.NewLogger("relay_udp_mux")),
-		}
-		if rtcConf.EnableLoopbackCandidate {
-			opts = append(opts, ice.UDPMuxFromPortWithLoopback())
-		}
-		if ipFilter != nil {
-			opts = append(opts, ice.UDPMuxFromPortWithIPFilter(ipFilter))
-		}
-		if ifFilter != nil {
-			opts = append(opts, ice.UDPMuxFromPortWithInterfaceFilter(ifFilter))
-		}
-
-		var err error
-		relayUdpMuxFixedPort, err := ice.NewMultiUDPMuxFromPort(int(rtcConf.UdpPort), opts...)
-		if err != nil {
-			return nil, err
-		}
-		logger.Infow("using udp mux for relay port", "port", rtcConf.UdpPort)
-
-		r := rand.New(rand.NewSource(time.Now().UnixNano()))
-		randomPort := r.Intn(int(rtcConf.PortRangeEnd-rtcConf.PortRangeStart+1)) + int(rtcConf.PortRangeStart)
-
-		relayUdpMuxRandomPort, err := ice.NewMultiUDPMuxFromPort(randomPort, opts...)
-		if err != nil {
-			return nil, err
-		}
-		logger.Infow("using udp mux for in-relay additional random port", "port", randomPort)
-
-		relayUdpMux = ice.NewMultiUDPMuxDefault(relayUdpMuxFixedPort, relayUdpMuxRandomPort)
-		addresses := relayUdpMux.GetListenAddresses()
-		logger.Infow("relay udp mux addresses", "addresses", fmt.Sprintf("%+v", addresses))
-	}
-
-	var err error
 	networkTypes := make([]webrtc.NetworkType, 0, 4)
 
 	if !rtcConf.ForceTCP {
@@ -145,27 +106,10 @@ func NewWebRTCRelayConfig(conf *config.Config, externalIP string) (*WebRTCRelayC
 		}
 	}
 
-	// use TCP mux when it's set
-	var tcpListener *net.TCPListener
 	if rtcConf.TCPPort != 0 {
 		networkTypes = append(networkTypes,
 			webrtc.NetworkTypeTCP4, webrtc.NetworkTypeTCP6,
 		)
-		tcpListener, err = net.ListenTCP("tcp", &net.TCPAddr{
-			Port: int(rtcConf.TCPPort),
-		})
-		if err != nil {
-			return nil, err
-		}
-
-		tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
-			Logger:          s.LoggerFactory.NewLogger("tcp_mux"),
-			Listener:        tcpListener,
-			ReadBufferSize:  readBufferSize,
-			WriteBufferSize: writeBufferSizeInBytes,
-		})
-
-		s.SetICETCPMux(tcpMux)
 	}
 
 	if len(networkTypes) == 0 {
@@ -189,6 +133,38 @@ func NewWebRTCRelayConfig(conf *config.Config, externalIP string) (*WebRTCRelayC
 		} else {
 			c.ICEServers = []webrtc.ICEServer{utils.IceServerForStunServers(config.DefaultStunServers)}
 		}
+	}
+
+	var relayUdpMux ice.UDPMux
+	if rtcConf.UdpPort != 0 {
+		r := rand.New(rand.NewSource(time.Now().UnixNano()))
+		extraPort := r.Intn(int(rtcConf.PortRangeEnd-rtcConf.PortRangeStart+1)) + int(rtcConf.PortRangeStart)
+		var err error
+		relayUdpMux, err = listenRelayUDP(int(rtcConf.UdpPort), extraPort, rtcConf.EnableLoopbackCandidate, ifFilter, ipFilter)
+		if err != nil {
+			return nil, err
+		}
+		logger.Infow("using udp mux for relay port", "port", rtcConf.UdpPort)
+		logger.Infow("using udp mux for in-relay additional random port", "port", extraPort)
+		logger.Infow("relay udp mux addresses", "addresses", fmt.Sprintf("%+v", relayUdpMux.GetListenAddresses()))
+	}
+
+	if rtcConf.TCPPort != 0 {
+		tcpListener, err := net.ListenTCP("tcp", &net.TCPAddr{Port: int(rtcConf.TCPPort)})
+		if err != nil {
+			if relayUdpMux != nil {
+				_ = relayUdpMux.Close()
+			}
+			return nil, err
+		}
+		tcpMux := ice.NewTCPMuxDefault(ice.TCPMuxParams{
+			Logger:          s.LoggerFactory.NewLogger("tcp_mux"),
+			Listener:        tcpListener,
+			ReadBufferSize:  readBufferSize,
+			WriteBufferSize: writeBufferSizeInBytes,
+		})
+
+		s.SetICETCPMux(tcpMux)
 	}
 
 	return &WebRTCRelayConfig{

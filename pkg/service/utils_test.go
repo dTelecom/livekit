@@ -3,17 +3,10 @@ package service_test
 import (
 	"testing"
 
-	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/require"
 
 	"github.com/livekit/livekit-server/pkg/service"
 )
-
-func redisClient() *redis.Client {
-	return redis.NewClient(&redis.Options{
-		Addr: "localhost:6379",
-	})
-}
 
 func TestIsValidDomain(t *testing.T) {
 	list := map[string]bool{
