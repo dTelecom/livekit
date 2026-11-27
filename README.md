@@ -53,7 +53,7 @@ Run `mage test` for local development. Operators can run `mage testAll` with two
 | `DTELECOM_SMOKE_TOKEN_PROVIDER` | Executable that takes one private directory path and writes room grants for a fresh room on each invocation. The included Cloud provider is `$PWD/test/fixtures/cloud-room.cjs`. |
 | `DTELECOM_CHAT_TOKEN_A_FILE`, `DTELECOM_CHAT_TOKEN_B_FILE` | Files containing fresh signed chat JWTs for two distinct test users and devices from the same registered chat tenant. A must permit sending, B receiving. Both grants must use `http://127.0.0.1:<port>/chat-fixture-fallback` as their callback. Choose a free port for A. |
 
-To use the included provider, export your test project's `DTELECOM_CLOUD_URL`, `DTELECOM_API_KEY`, and `DTELECOM_API_SECRET`. Set `DTELECOM_FIXTURE_BACKEND_DIR` to a backend directory with the Cloud-capable `@dtelecom/server-sdk-js` installed. The provider was verified with Node.js 22.14.0 and SDK 4.2.3. This provider issues RTC and admin grants. Obtain the two chat grants separately from the registered chat issuer.
+To use the included provider, export your test project's `DTELECOM_CLOUD_URL`, `DTELECOM_API_KEY`, and `DTELECOM_API_SECRET`. Set `DTELECOM_FIXTURE_BACKEND_DIR` to a backend directory with the Cloud-capable `@dtelecom/server-sdk-js` installed. This provider issues RTC and admin grants. Obtain the two chat grants separately from the registered chat issuer.
 
 ```sh
 export DTELECOM_SMOKE_TOKEN_PROVIDER="$PWD/test/fixtures/cloud-room.cjs"
