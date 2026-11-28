@@ -23,7 +23,9 @@ Create a dTelecom Cloud project and keep its API key and secret on your backend.
 | Developer task | dTelecom packages |
 | --- | --- |
 | Join a room from a browser | [JavaScript / TypeScript client](https://github.com/dTelecom/client-sdk-js) and optional [React components](https://github.com/dTelecom/components-js) |
-| Join a room from iOS or Android | [React Native SDK](https://github.com/dTelecom/client-sdk-react-native) and its [Meet and Live invite example](https://github.com/dTelecom/client-sdk-react-native/tree/dtelecom-m150/example) |
+| Join from a native iOS app | [Swift SDK · Swift Package Manager](https://github.com/dTelecom/client-sdk-ios) and [Rooms example](https://github.com/dTelecom/client-sdk-ios/tree/1.0.0/Examples/Rooms) |
+| Join from a native Android app | [Kotlin SDK · Maven Central](https://central.sonatype.com/artifact/org.dtelecom/rtc-android/1.0.0) and [Rooms example](https://github.com/dTelecom/client-sdk-android/tree/1.0.0/examples/rooms) |
+| Join from a React Native app | [React Native SDK](https://github.com/dTelecom/client-sdk-react-native) and [Rooms example](https://github.com/dTelecom/client-sdk-react-native/tree/v2.1.0/example) |
 | Issue tokens and administer rooms | [JavaScript / TypeScript backend SDK](https://github.com/dTelecom/server-sdk-js) or the [Go SDK](https://github.com/dTelecom/server-sdk-go) using its `cloud` package |
 | Join from a Go service | [Go participant SDK](https://github.com/dTelecom/server-sdk-go) |
 | Build a voice agent | [JavaScript agents framework](https://github.com/dTelecom/agents-js) |
